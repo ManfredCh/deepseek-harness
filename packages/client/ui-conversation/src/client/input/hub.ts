@@ -83,12 +83,16 @@ export class InputHub implements SessionInputResolver {
     const existing = this.shells.get(binding.sessionId)
     if (existing !== undefined) return existing
     const { sessionId: id, session, ctx: actx } = binding
+    const lifetime = new AbortController()
     const shell = new SessionInputShell({
       actx,
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),
       queue: queueReadFaceOf(session),
       defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),
+      commandSettled: (token, outcome, signal) => actx.parallel(actx, 'conversation/command-settled', {
+        sessionId: id, token, outcome, signal: AbortSignal.any([signal, lifetime.signal]),
+      }),
       steerQueue: () => { void this.steerQueue(session, shell) },
       commandAttachments: {
         serialize: async (ids) => {
@@ -123,6 +127,7 @@ export class InputHub implements SessionInputResolver {
           shell.insertText(req.text, req.span, req.continue === true) ? true : undefined),
       ]
       return () => {
+        lifetime.abort()
         for (const off of offs) off()
         const drafts = shell.dispose()
         this.shells.delete(id)

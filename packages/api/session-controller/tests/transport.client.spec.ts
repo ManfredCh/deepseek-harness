@@ -234,6 +234,25 @@ describe.each(['snapshot', 'live', 'page'] as const)('Session %s wire acceptance
 })
 
 describe('Session Client stream adapters', () => {
+  it('reopens a native snapshot after checkout so history before the old window can return', async () => {
+    const checkout: SessionEventEntry = { type: 'event', event: { type: 'session/history-checkout', seq: 11, time: 11, data: { throughSeq: 0 } } }
+    const remote = new ScriptedSessionRemote([
+      { frames: [snapshot(10, [entry(10)], true), checkout], hold: true },
+      { frames: [snapshot(11, [entry(0), ...Array.from({ length: 10 }, (_, index) => entry(index + 1)), checkout])], hold: true },
+    ], [])
+    const changes: SessionJournalChange[] = [], failed = vi.fn()
+    const stream = new SessionEventStream(sessionClient(remote), ADDRESS, { publish: change => changes.push(change), failed })
+    try {
+      await stream.open({ maxMessages: 1 })
+      await vi.waitFor(() => expect(remote.followRequests).toHaveLength(2))
+      await vi.waitFor(() => expect(changes.filter(change => change.type === 'replace')).toHaveLength(2))
+      const last = changes.filter(change => change.type === 'replace').at(-1)
+      if (last?.type !== 'replace') throw new Error('expected the last journal change to be a replace')
+      expect(last.entries[0]?.event.seq).toBe(0)
+      expect(remote.pageRequests).toEqual([])
+      expect(failed).not.toHaveBeenCalled()
+    } finally { await stream.dispose() }
+  })
   it('preserves current envelopes and payloads without normalization across every journal path', async () => {
     const events: SessionWireEvent[] = [
       surfaceEvent(),

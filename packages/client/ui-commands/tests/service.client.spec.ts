@@ -609,7 +609,7 @@ describe('matchEnter envelope policy (images)', () => {
       .resolves.toEqual({ kind: 'error', text: 'handler refused' })
     expect(executeCalls).toEqual([{ sessionId: sid('s1'), line: '/vision x', images: [png] }])
     result = { kind: 'success', text: 'described' }
-    await expect(outcome.claim.submit('x', new Context(), [png])).resolves.toEqual({ kind: 'success' })
+    await expect(outcome.claim.submit('x', new Context(), [png])).resolves.toEqual({ kind: 'success', commandResult: result })
   })
 
   it('an imageless submission keeps the always-success admission mapping over a handler error', async () => {
@@ -619,7 +619,7 @@ describe('matchEnter envelope policy (images)', () => {
     await warm(proj('s1'))
     const outcome = source.matchSpace!(proj('s1'), '/goal')
     if (outcome === undefined || outcome === 'handled' || !('claim' in outcome)) throw new Error('expected claim')
-    await expect(outcome.claim.submit('x', new Context(), [])).resolves.toEqual({ kind: 'success' })
+    await expect(outcome.claim.submit('x', new Context(), [])).resolves.toEqual({ kind: 'success', commandResult: { kind: 'error', text: 'late failure' } })
   })
 })
 
@@ -635,7 +635,8 @@ describe('execute payload', () => {
     expect(executeCalls).toEqual([{ sessionId: sid('s1'), line: '/goal ship it', images: [] }])
     // Pure admission: no outcome text ever rides the submit result — the
     // durable command lifecycle events render the outcome in the flow.
-    expect(settled).toEqual({ kind: 'success' })
+    expect(settled).toEqual({ kind: 'success', commandResult: { kind: 'success' } })
+    expect(settled.text).toBeUndefined()
     expect(executions).toEqual([{
       sessionId: sid('s1'),
       name: 'goal',
@@ -657,7 +658,7 @@ describe('execute payload', () => {
     b.ctx.on('command/executed', rejectingListener)
     b.ctx.on('command/executed', after)
 
-    await expect(outcome.claim.submit('ship it', new Context(), [])).resolves.toEqual({ kind: 'success' })
+    await expect(outcome.claim.submit('ship it', new Context(), [])).resolves.toEqual({ kind: 'success', commandResult: { kind: 'success' } })
     expect(after).toHaveBeenCalledOnce()
     await Promise.resolve()
     await Promise.resolve()
@@ -678,7 +679,7 @@ describe('execute payload', () => {
     const bad = await first.submit('x', new Context(), [])
     expect(bad.kind).toBe('error')
     const second = await claimOf({ execute: () => Promise.resolve({ matched: true }) })
-    await expect(second.submit('', new Context(), [])).resolves.toEqual({ kind: 'success' })
+    await expect(second.submit('', new Context(), [])).resolves.toEqual({ kind: 'success', commandResult: { kind: 'success' } })
   })
 })
 

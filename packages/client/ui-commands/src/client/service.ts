@@ -380,7 +380,7 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     if (attachments.length > 0 && result.value.result.kind === 'error') {
       return { kind: 'error', text: result.value.result.text }
     }
-    return { kind: 'success' }
+    return { kind: 'success', commandResult: result.value.result }
   }
 
   /** Publish the local acknowledgment without letting an observer change command admission. */

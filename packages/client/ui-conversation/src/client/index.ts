@@ -62,7 +62,7 @@ export type {
   UseConversationViews,
 } from './contract/slots.ts'
 export type {
-  ArbitrateKey, ArbitrateOutcome, BeginCommandRequest, CommandClaim, ConsumeTokenRequest,
+  ArbitrateKey, ArbitrateOutcome, BeginCommandRequest, CommandClaim, ConsumeTokenRequest, ConversationCommandSettled,
   DraftAttachmentId, InputActions, InputState, InsertReferenceRequest, InsertTextRequest,
   PickOutcome, ReferenceInsert, SessionInput, SessionInputResolver, SubmitAttachment,
   SubmitOutcome, TokenSpan,

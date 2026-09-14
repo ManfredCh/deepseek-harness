@@ -67,6 +67,8 @@ export interface SessionInputDeps {
     mode: InputSubmitMode,
     signal: AbortSignal,
   ): Promise<SubmitOutcome>
+  /** Local effects after a successful command has consumed its submitted draft. */
+  commandSettled?(token: string, outcome: SubmitOutcome, signal: AbortSignal): Promise<void>
   /** Command-plane attachment plumbing (the hub owns the conversation face and the copy). */
   commandAttachments: {
     /** Resolve ordered draft ids to wire payloads without sending them; rejects when an id no longer resolves. */
@@ -871,7 +873,7 @@ export class SessionInputShell implements SessionInput {
         return claim.submit(args, this.deps.actx, attachments)
       })
       .then(
-        (outcome) => {
+        async (outcome) => {
           if (outcome === undefined || this.dead(attempt)) return
           if (outcome.kind === 'success' && attachmentIds.length > 0) {
             const submitted = new Set(attachmentIds)
@@ -883,6 +885,10 @@ export class SessionInputShell implements SessionInput {
             draft: this.projection.clipboardText, outcome,
             ...(outcome.kind === 'error' && outcome.text === undefined ? { message: 'command failed' } : {}),
           }))
+          if (outcome.kind === 'success') {
+            try { await this.deps.commandSettled?.(claim.token, outcome, attempt.signal) }
+            catch (error) { if (!this.dead(attempt)) this.notify('error', error instanceof Error ? error.message : String(error)) }
+          }
         },
         (error: unknown) => {
           if (this.dead(attempt)) return

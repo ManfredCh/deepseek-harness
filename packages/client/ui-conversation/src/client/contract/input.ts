@@ -7,6 +7,8 @@
  * here is the submit plane (phase, claim, attempt) alone.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { CommandResult } from '@deepseek-ai/dsh-commands'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { LexicalEditor } from 'lexical'
@@ -39,6 +41,16 @@ export interface DraftAttachmentSerializationResult {
 export interface SubmitOutcome {
   readonly kind: 'success' | 'error'
   readonly text?: string
+  /** 原生命令结果仅供提交完成后的客户端效果使用，不作为输入框提示回显。 */
+  readonly commandResult?: CommandResult
+}
+
+/** Local initiating-composer effect after a successful claimed command commits its draft. */
+export interface ConversationCommandSettled {
+  readonly sessionId: SessionId
+  readonly token: string
+  readonly outcome: SubmitOutcome
+  readonly signal: AbortSignal
 }
 
 /** Command-mode credential supplied by one input-trigger source. */
@@ -143,6 +155,13 @@ export interface InputTriggerController {
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Apply client-only effects of this composer's own settled command.
+     * Remote journal observations never emit this event.
+     * @param request - initiating Session identity and command result.
+     * @mode parallel
+     */
+    'conversation/command-settled'(request: ConversationCommandSettled): void | Promise<void>
     /**
      * Claim a command token for the scoped input machine.
      * @param request - command claim and span.

@@ -157,6 +157,7 @@ export interface ConversationViewDefinitions {
  * contiguous Event window and materializes registered view snapshots.
  */
 export class ConversationNodeAssembler implements ConversationViewSnapshotStore {
+  private historyClosures: readonly SessionEventLikeEntry[] = []
   private readonly contexts = new Map<string, InternalContext>()
   private readonly contextsByKind = new Map<string, InternalContext[]>()
   private readonly contextsBySeq = new Map<number, Set<InternalContext>>()
@@ -188,9 +189,11 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
    * Replace the complete loaded window after open, resync, or gap repair.
    * @param entries - complete contiguous window.
    * @param hasMore - whether older history remains outside the window.
+   * @param historyClosures - original hidden end events used only to close selected Locations.
    * @returns immediate publication request.
    */
-  replaceWindow(entries: readonly SessionEventLikeEntry[], hasMore: boolean): ConversationPublication {
+  replaceWindow(entries: readonly SessionEventLikeEntry[], hasMore: boolean, historyClosures: readonly SessionEventLikeEntry[] = []): ConversationPublication {
+    this.historyClosures = historyClosures
     this.contexts.clear()
     this.contextsByKind.clear()
     this.contextsBySeq.clear()
@@ -203,7 +206,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     this.hasMore = hasMore
     const sorted = [...entries].sort((left, right) => left.event.seq - right.event.seq)
     for (const entry of sorted) this.inputs.set(entry.event.seq, entry)
-    this.locationIndex.rebuild(sorted)
+    this.locationIndex.rebuild([...sorted, ...historyClosures].sort((left, right) => left.event.seq - right.event.seq))
     this.timelineDirty = true
     for (const entry of sorted) this.matchInput(entry)
     this.replayDependencies()
@@ -299,7 +302,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     for (const entry of fresh) this.inputs.set(entry.event.seq, entry)
     this.hasMore = hasMore
     const previousTimeline = this.locationIndex.snapshot()
-    const changedLocations = this.locationIndex.rebuild(this.sortedInputs())
+    const changedLocations = this.locationIndex.rebuild([...this.sortedInputs(), ...this.historyClosures].sort((left, right) => left.event.seq - right.event.seq))
     if (this.locationIndex.snapshot() !== previousTimeline) this.timelineDirty = true
     const affected = this.refreshMatchLocations(changedLocations)
     const pending = new Map<string, PendingMatch[]>()
@@ -322,7 +325,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
    */
   rebuildRegistry(): ConversationPublication {
     this.resetViewBuilders()
-    return this.replaceWindow(this.sortedInputs(), this.hasMore)
+    return this.replaceWindow(this.sortedInputs(), this.hasMore, this.historyClosures)
   }
 
   /**

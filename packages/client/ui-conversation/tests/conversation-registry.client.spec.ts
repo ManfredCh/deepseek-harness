@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { createAssistantMessage, LlmAttemptId } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, LlmAttemptId } from '@deepseek-ai/dsh-llm'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import {
   createScope, MutableSessionEventSource,
@@ -140,6 +140,42 @@ async function bootRegistries(): Promise<{
 }
 
 describe('Conversation registries', () => {
+  it('rebuilds the existing conversation on checkout, prepend and redo without retaining hidden nodes', async () => {
+    const { ctx, uiConversation, binding, events, views } = await bootRegistries()
+    await ctx.plugin({ name: 'checkout-test-ready', apply() {} })
+    try {
+      events.register({
+        kind: 'checkout-visible-user', target: 'chat',
+        match: event => event.type === 'user/message' && event.surfaceOp === 'append' ? { id: String(event.seq), role: 'start' } : null,
+        start: (_context, match) => match.event.type === 'user/message' ? match.event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : '',
+        update: context => context.state,
+        buildViewNode: context => ({ key: context.key, kind: 'user', id: context.id, target: 'chat', data: context.state }),
+      })
+      views.register({ target: 'chat', create: () => {
+        let current: readonly string[] = []
+        return { empty: current, replace: ({ nodes }) => current = nodes.map(node => String(node.data)), apply: ({ upserts }) => current = [...current, ...upserts.map(node => String(node.data))] }
+      } })
+      const conversation = uiConversation.binding(binding)
+      conversation.activate('chat')
+      const source = binding.eventSource as MutableSessionEventSource
+      const user = (seq: number, text: string) => ({ type: 'event' as const, event: { seq: SessionSeq(seq), time: seq, type: 'user/message' as const, data: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), surfaceOp: 'append' as const } })
+      const first = user(0, 'A'), second = user(1, 'B'), branch = user(3, 'C')
+      const checkout = { type: 'event' as const, event: { seq: SessionSeq(2), time: 2, type: 'session/history-checkout' as const, data: { throughSeq: SessionSeq(0) } } }
+      const values = () => conversation.snapshot.getSnapshot().views.get('chat')
+      source.replace([first, second], false)
+      expect(values()).toEqual(['A', 'B'])
+      source.append(checkout)
+      expect(values()).toEqual(['A'])
+      source.append(branch)
+      expect(values()).toEqual(['A', 'C'])
+      source.replace([second, checkout, branch], true)
+      expect(values()).toEqual(['C'])
+      source.prepend([first], false)
+      expect(values()).toEqual(['A', 'C'])
+      source.append({ type: 'event', event: { seq: SessionSeq(4), time: 4, type: 'session/history-checkout', data: { throughSeq: SessionSeq(1) } } })
+      expect(values()).toEqual(['A', 'B'])
+    } finally { await ctx.fiber.dispose() }
+  })
   it('publishes frame-paced updates after three animation frames and lets immediate updates preempt them', async () => {
     let nextFrame = 0
     const frames = new Map<number, FrameRequestCallback>()
