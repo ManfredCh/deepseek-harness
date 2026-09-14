@@ -41,6 +41,9 @@ export class RemoteStreamMuxClient {
   private running = false
   private disposed = false
 
+  /** Node shells may provide an authenticated socket factory; the mux protocol stays shared. */
+  constructor(private readonly createWebSocket: (url: string) => WebSocket = url => new WebSocket(url)) {}
+
   /** Ensure a physical attempt exists, following the current attempt once if needed. */
   start(): void {
     if (this.disposed) return
@@ -140,7 +143,7 @@ export class RemoteStreamMuxClient {
   }
 
   private connect(): Promise<WebSocket> {
-    const socket = new WebSocket(remoteStreamUrl())
+    const socket = this.createWebSocket(remoteStreamUrl())
     const connecting = new Promise<WebSocket>((resolve, reject) => {
       let settled = false
       const rejectCandidate = (error: Error): void => {

@@ -13,7 +13,8 @@
     "src/client/snapshot-stream.ts",
     "src/client/stream-client.ts",
     "src/remote-error-codes.ts",
-    "src/stream-protocol.ts"
+    "src/stream-protocol.ts",
+    "src/node.ts"
   ],
   "references": [
     {

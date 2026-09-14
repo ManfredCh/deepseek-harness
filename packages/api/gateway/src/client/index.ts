@@ -132,12 +132,17 @@ declare module '@deepseek-ai/cordis' {
 /** Required Client services: the Typert registry and the existing Connection carrier. */
 export const inject = ['typert', 'connection']
 
+/** Optional Node socket construction; all logical Remote streams still use the native mux. */
+export interface ClientRemoteOptions {
+  readonly createWebSocket?: (url: string) => WebSocket
+}
+
 /**
  * Install the typed Client Remote service.
  * @param ctx - Client Cordis root.
  */
-export function apply(ctx: Context): void {
-  new ClientRemoteService(ctx)
+export function apply(ctx: Context, options: ClientRemoteOptions = {}): void {
+  new ClientRemoteService(ctx, options)
 }
 
 class ClientRemoteService extends Service implements ClientRemote {
@@ -145,12 +150,13 @@ class ClientRemoteService extends Service implements ClientRemote {
   private readonly connection: ConnectionHandle
   private readonly namespaces = new Map<string, RemoteNamespaceHandle>()
   private hostFacts: RemoteHostFacts | undefined
-  private readonly streams = new RemoteStreamMuxClient()
+  private readonly streams: RemoteStreamMuxClient
   private readonly events: ClientRemoteEvents
   private mutations = Promise.resolve()
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, options: ClientRemoteOptions) {
     super(ctx, 'remote')
+    this.streams = new RemoteStreamMuxClient(options.createWebSocket)
     this.ownerCtx = ctx
     const connection = ctx.get('connection') as ConnectionHandle
     this.connection = connection
