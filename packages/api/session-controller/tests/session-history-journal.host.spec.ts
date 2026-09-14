@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent, type AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
-import SessionStore from '@deepseek-ai/dsh-session'
+import SessionStore, { selectActiveHistoryEvents, SessionSeq } from '@deepseek-ai/dsh-session'
 import { LlmAttemptId, ToolCallId, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionHistoryController } from '@deepseek-ai/dsh-api-session-controller/src/history.ts'
@@ -95,6 +95,30 @@ function pageEvents(page: SessionPage): SessionWireEvent[] {
 }
 
 describe('Session history raw journal', () => {
+  it('counts active messages while preserving contiguous raw records around a checkout', async () => {
+    const { ctx } = await harness()
+    try {
+      const session = ctx.sessions.create(undefined, { meta: { cwd: '/workspace' } })
+      const ends: number[] = []
+      for (let index = 0; index < 8; index++) {
+        session.append('turn/start', { turn: index + 1 })
+        session.append('step/start', { turn: index + 1, step: 1 })
+        appendUserText(session, `human-${index}`)
+        session.append('assistant/message', { turn: index + 1, step: 1, message: createMessage({ role: 'assistant', content: [{ type: 'text', text: `answer-${index}` }], source: { kind: 'model', provider: 'p', model: 'm' } }), stream: [] }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: index + 1, step: 1 })
+        ends.push(session.append('turn/end', { turn: index + 1, reason: { kind: 'completed' } }).seq)
+      }
+      session.append('session/history-checkout', { throughSeq: SessionSeq(ends[1]!) })
+      const history = new SessionHistoryController(ctx, () => {})
+      const page = await history.page({ address: { kind: 'session', sessionId: session.id }, throughSeq: SessionSeq(session.seq - 1), maxMessages: 2 }, new AbortController().signal)
+      const records = pageEvents(page)
+      expect(records.map(event => event.seq)).toEqual(Array.from({ length: records.length }, (_, index) => records[0]!.seq + index))
+      expect(records.some(event => event.type === 'session/history-checkout')).toBe(true)
+      const active = selectActiveHistoryEvents(records)
+      expect(active.filter(event => event.type === 'user/message').map(event => event.data)).toEqual([session.snapshotEvents().find(event => event.type === 'user/message' && event.data.content.some(block => block.type === 'text' && block.text === 'human-1'))!.data])
+      expect(records.some(event => event.type === 'user/message' && JSON.stringify(event.data).includes('human-7'))).toBe(true)
+    } finally { await ctx.fiber.dispose() }
+  })
   it('opens an empty opted-in Assistant baseline before any live attempt exists', async () => {
     const { ctx } = await harness()
     const session = ctx.sessions.create(undefined, { meta: { cwd: '/workspace' } })

@@ -33,6 +33,36 @@ function chip(shell: SessionInputShell): void {
 }
 
 describe('reference submission', () => {
+  it('publishes its own command effect after submitted text and attachments are consumed', async () => {
+    let settled = false
+    const released: readonly DraftAttachmentId[][] = []
+    const shell = new SessionInputShell({
+      actx: {} as Context, defaultSink: vi.fn(),
+      commandAttachments: { ...commandAttachments, release: (ids) => { (released as DraftAttachmentId[][]).push([...ids]) } },
+      commandSettled: async (token, outcome, signal) => {
+        expect(token).toBe('/control')
+        expect(outcome.text).toBe('opaque-result')
+        expect(signal.aborted).toBe(false)
+        expect(shell.snapshot.draft).toBe('')
+        expect(shell.snapshot.attachmentIds).toEqual([])
+        shell.setDraft('restored text')
+        expect(shell.addAttachments(['restored-file' as DraftAttachmentId])).toBe(true)
+        settled = true
+      },
+    })
+    shell.setDraft('/control')
+    shell.addAttachments(['submitted-file' as DraftAttachmentId])
+    expect(shell.beginCommand(
+      { name: 'control', token: '/control', attachments: true, submit: async () => ({ kind: 'success', text: 'opaque-result' }) },
+      { start: 0, end: 8, draftRev: shell.snapshot.draftRev },
+    )).toBe(true)
+    shell.submit()
+    await vi.waitFor(() => expect(settled).toBe(true))
+    expect(shell.snapshot.draft).toBe('restored text')
+    expect(shell.snapshot.attachmentIds).toEqual(['restored-file'])
+    expect(released).toEqual([['submitted-file']])
+    shell.dispose()
+  })
   it('mirrors canonical reference text so a persisted draft remains resolvable after remount', async () => {
     const mirror = vi.fn()
     const first = new SessionInputShell({

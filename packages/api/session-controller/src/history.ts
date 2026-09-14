@@ -5,6 +5,7 @@ import { Deque } from '@deepseek-ai/dsh-deque'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import {
   isAppendSurfaceEvent,
+  selectActiveHistoryEvents,
   SessionLogOffset,
   SessionSeq,
 } from '@deepseek-ai/dsh-session'
@@ -152,7 +153,6 @@ export class SessionHistoryController {
       // Constructor seed events have no session/event notification. Normally
       // only the end-seed suffix is new; if persistence advanced after the
       // opening observation, replay everything beyond that snapshot cursor.
-      // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
       const suffix = session.snapshotEvents(snapshotCursor === undefined
         ? session.firstLiveSeq
         : SessionLogOffset(snapshotCursor + 1))
@@ -390,8 +390,13 @@ function paginate(
   const end = SessionLogOffset(Math.min(throughSeq + 1, beforeSeq ?? throughSeq + 1))
   let count = 0
   let cut = SessionLogOffset(0)
-  for (let index = end - 1; index >= 0; index--) {
-    const event = events[index] as SessionEvent
+  // Count the active conversation at the caller's fixed observation cursor.
+  // Keep the returned records contiguous and raw: the later checkout marker
+  // remains available to Clients when older pages join their current window.
+  const active = selectActiveHistoryEvents(events.slice(0, throughSeq + 1))
+  for (let index = active.length - 1; index >= 0; index--) {
+    const event = active[index] as SessionEvent
+    if (event.seq >= end) continue
     if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
     count++
     const sources = event.sourceEventSeqs
