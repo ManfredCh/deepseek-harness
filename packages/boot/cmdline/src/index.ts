@@ -52,6 +52,16 @@ export interface AppReady {
   onReady(listener: () => void): () => void
 }
 
+/** Optional application consumption of a user interrupt; unhandled signals retain launcher shutdown. */
+export interface AppInterrupt {
+  /**
+   * Register a synchronous handler for a currently owned interactive activity.
+   * Return true only when that activity consumes SIGINT. Dispose the handler
+   * when the activity ends; SIGTERM is never routed through this interface.
+   */
+  onInterrupt(listener: (signal: 'SIGINT') => boolean): () => void
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The invocation's inner arguments; provided by a launcher before the tree mounts. */
@@ -60,6 +70,8 @@ declare module '@deepseek-ai/cordis' {
     appExit?: AppExit
     /** Successful startup signal; provided by a launcher before the tree mounts. */
     appReady?: AppReady
+    /** Optional SIGINT consumption; the launcher retains all process-exit ownership. */
+    appInterrupt?: AppInterrupt
   }
 }
 
@@ -71,6 +83,8 @@ export interface CmdlineHost {
   exit: AppExit
   /** Successful startup signal for lifecycle work that must not mask boot failure. */
   ready?: AppReady
+  /** Optional application user-interrupt seam. */
+  interrupt?: AppInterrupt
 }
 
 /**
@@ -86,6 +100,7 @@ export function provideCmdline(ctx: Context, host: CmdlineHost): void {
   ctx.provide('cmdlineArgs', { get: () => snapshot })
   ctx.provide('appExit', host.exit)
   if (host.ready !== undefined) ctx.provide('appReady', host.ready)
+  if (host.interrupt !== undefined) ctx.provide('appInterrupt', host.interrupt)
 }
 
 /** Process stdin operations used to bind a stdio application's lifetime. */
