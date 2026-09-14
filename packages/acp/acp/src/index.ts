@@ -31,6 +31,10 @@ import {
   type CloseSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
+  type LoadSessionRequest,
+  type LoadSessionResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
   type NewSessionRequest,
@@ -181,9 +185,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
         protocolVersion: PROTOCOL_VERSION,
         agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
         agentCapabilities: {
-          mcpCapabilities: { http: true },
-          promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
-          sessionCapabilities: { close: {}, list: {}, resume: {} },
+          loadSession: true,
+          mcpCapabilities: { http: true, sse: true },
+          promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: ctx.get('attachments') !== undefined },
+          sessionCapabilities: { close: {}, list: {}, resume: {}, fork: {} },
         },
         authMethods: [],
       }
@@ -246,7 +251,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
       activating.add(sessionId)
       return (async (): Promise<ResumeSessionResponse> => {
         const persisted = (await persistence.stat(sessionId, { signal }))?.header
-        if (persisted === undefined || persisted.origin === 'subagent' || persisted.parentSession !== undefined) {
+        if (persisted === undefined || persisted.origin === 'subagent' || (persisted.parentSession !== undefined && !persisted.isSeeded)) {
           throw invalidParams(`session is not resumable: ${sessionId}`)
         }
         if (!await sameDirectory(persisted.cwd, params.cwd)) {
@@ -289,6 +294,33 @@ export function apply(ctx: Context, config: AcpConfig): void {
       })().finally(() => { activating.delete(sessionId) })
     },
 
+    async loadSession(params: LoadSessionRequest, signal: AbortSignal): Promise<LoadSessionResponse> {
+      const result = await implementation.resumeSession(params, signal)
+      const id = brandString<SessionId>(params.sessionId), record = requireSession(id)
+      try { await record.replayHistory(); return result }
+      catch (error) { sessions.delete(id); await record.close('session/load replay failed'); throw error }
+    },
+
+    async forkSession(params: ForkSessionRequest, signal: AbortSignal): Promise<ForkSessionResponse> {
+      assertOpen(); validateWorkspaceParams(params)
+      const sourceId = brandString<SessionId>(params.sessionId), active = sessions.get(sourceId)?.agent.session
+      const handle = active ? undefined : await persistence.open(sourceId, 'read', { signal })
+      let source
+      try { source = { header: active?.header ?? handle!.header, events: active?.snapshotEvents() ?? (await handle!.read(undefined, undefined, { signal })).events } }
+      finally { await handle?.close() }
+      if (source.header.origin === 'subagent' || (source.header.parentSession !== undefined && !source.header.isSeeded) || !await sameDirectory(source.header.cwd, params.cwd)) throw invalidParams('fork source workspace or ownership does not match')
+      const boundary = source.events.findLast(event => event.type === 'turn/end')
+      if (!boundary) throw invalidParams('session has no completed turn to fork')
+      let cut = boundary.seq + 1
+      while (cut < source.events.length && source.events[cut]?.type !== 'turn/start') cut++
+      const sessionId = brandString<SessionId>(randomUUID())
+      const record = await AcpSession.create(ctx, { sessionId, cwd: params.cwd, mcpServers: params.mcpServers ?? [], agentOptions: agentOptions(config), fallbackSelection: initialSelection(config), signal, notify, seed: source.events.slice(0, cut), parentSession: sourceId })
+      if (closed) { await record.close('connection closed during fork'); throw internalError('connection closed during fork') }
+      sessions.set(sessionId, record)
+      try { const configOptions = await record.configOptions(signal); await ctx.sessions.flush(record.agent.session); await record.replayHistory(); return { sessionId, configOptions } }
+      catch (error) { sessions.delete(sessionId); await record.close('session/fork activation failed'); throw error }
+    },
+
     async listSessions(params: ListSessionsRequest, signal: AbortSignal): Promise<ListSessionsResponse> {
       assertOpen()
       if (params.cwd !== undefined && params.cwd !== null && !isAbsolute(params.cwd)) {
@@ -307,7 +339,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
             || activating.has(header.id)
             || ctx.sessions.get(header.id) !== undefined
             || header.origin === 'subagent'
-            || header.parentSession !== undefined
+            || (header.parentSession !== undefined && !header.isSeeded)
             || header.cwd === undefined
             || !isAbsolute(header.cwd)
         ) return undefined
@@ -375,7 +407,9 @@ export function apply(ctx: Context, config: AcpConfig): void {
     Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
   )
+  // The SDK awaits each nonmatching handler; dispatch cancellation before request routes.
   const app = createAcpAgentApp({ name: 'deepseek-harness-acp' })
+    .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
     .onRequest(methods.agent.initialize, ({ params }) => implementation.initialize(params))
     .onRequest(methods.agent.authenticate, async ({ params }) => {
       await implementation.authenticate(params)
@@ -384,10 +418,11 @@ export function apply(ctx: Context, config: AcpConfig): void {
     .onRequest(methods.agent.session.new, ({ params, signal }) => implementation.newSession(params, signal))
     .onRequest(methods.agent.session.list, ({ params, signal }) => implementation.listSessions(params, signal))
     .onRequest(methods.agent.session.resume, ({ params, signal }) => implementation.resumeSession(params, signal))
+    .onRequest(methods.agent.session.load, ({ params, signal }) => implementation.loadSession(params, signal))
+    .onRequest(methods.agent.session.fork, ({ params, signal }) => implementation.forkSession(params, signal))
     .onRequest(methods.agent.session.close, ({ params }) => implementation.closeSession(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params, signal }) => implementation.setSessionConfigOption(params, signal))
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => implementation.prompt(params, signal))
-    .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
   const connection = app.connect(stream)
   const conn: AgentContext = connection.client
 
