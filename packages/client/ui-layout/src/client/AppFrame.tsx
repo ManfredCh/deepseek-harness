@@ -13,6 +13,15 @@
  * shown/track/fullscreen through `ctx.layout`; fullscreen keeps the reported
  * track but hides the outer resize handle. Everything arrives through the framework
  * shares — zero cordis or framework imports, zero self-made hooks.
+ *
+ * The centre has a composition seat: 'main.surface' receives the already
+ * dispatched main panel as an owner prop and may lay it out beside its own
+ * surfaces (a workbench around the Conversation, for instance). The occupant
+ * must render that node at a stable position of its own tree — the share is a
+ * render-pass node, not a cached instance, and the seat's lifecycle follows the
+ * frame (unloading the occupant restores the fallback; switching the main panel
+ * changes the node it receives). With no occupant the frame renders that same
+ * node itself (`fallback`), which is the shipped centre.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -27,7 +36,7 @@ import css from './AppFrame.module.css'
 /** Full composed props: runtime share + child-slot render share + store share. */
 export type AppFrameProps =
   & PropsRuntime<'root'>
-  & PropsRenderSlots<'sidebar' | 'main' | 'rightbar' | 'shell.overlay'>
+  & PropsRenderSlots<'sidebar' | 'main' | 'main.surface' | 'rightbar' | 'shell.overlay'>
   & PropsStore<ReturnType<typeof createLayoutStore>>
   & PropsLocale<'common'>
 
@@ -197,6 +206,12 @@ export function AppFrame({
   const main = useMemo(() => (
     <MainPanel usePanelInfo={usePanelInfo} renderSlot={renderSlot} />
   ), [usePanelInfo, renderSlot])
+  // The centre's composition seat (see the module doc). The fallback IS the
+  // dispatched main panel, so an unoccupied frame renders exactly what it did
+  // before this seat existed.
+  const centre = useMemo(
+    () => renderSlot('main.surface', { main }, { fallback: main }),
+    [renderSlot, main])
   const overlays = useMemo(() => renderSlot('shell.overlay', {}), [renderSlot])
 
   return (
@@ -222,7 +237,7 @@ export function AppFrame({
         {sidebar}
       </div>
       <>
-        <CenterColumn>{main}</CenterColumn>
+        <CenterColumn>{centre}</CenterColumn>
         <RightbarColumn>
           {renderSlot('rightbar', { width: normal.rightbar, viewportWidth: viewport, canShow: normal.rightbar > 0 })}
         </RightbarColumn>
