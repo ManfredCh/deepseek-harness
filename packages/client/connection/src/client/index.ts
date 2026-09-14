@@ -105,6 +105,13 @@ interface ClientTransportGlobal {
   __DSH_CONNECTION_RECOVERY__?: unknown
 }
 
+/** Explicit carrier inputs for a Node shell; omitted values preserve browser boot behavior. */
+export interface ClientConnectionOptions {
+  readonly origin?: string
+  readonly transport?: ClientTransportHooks
+  readonly recovery?: ConnectionRecoveryConfig
+}
+
 /**
  * The ctx.connection service API. API Gateway supplies generation readiness
  * and reset callbacks; Connection stays independent of downstream domain state.
@@ -179,12 +186,14 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
  * Client plugin body: pick physical carriers by page mode and provide ctx.connection.
  * @param ctx - client cordis context.
  */
-export function apply(ctx: Context): void {
-  const pageLocation = typeof location === 'undefined' ? undefined : location
+export function apply(ctx: Context, options: ClientConnectionOptions = {}): void {
+  const pageLocation = options.origin === undefined
+    ? typeof location === 'undefined' ? undefined : location
+    : new URL(options.origin)
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureRpc = fixture ? createFixtureConnectionRpc() : undefined
-  const transport = (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__
-  const recovery = resolveConnectionConfig((globalThis as ClientTransportGlobal).__DSH_CONNECTION_RECOVERY__)
+  const transport = options.transport ?? (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__
+  const recovery = resolveConnectionConfig(options.recovery ?? (globalThis as ClientTransportGlobal).__DSH_CONNECTION_RECOVERY__)
   const rpc = fixtureRpc ?? createWebConnectionRpc(transport?.fetch, transport?.openStream)
   let generationSource: ConnectionGenerationSource | undefined
   let owner: ConnectionOwner | undefined
