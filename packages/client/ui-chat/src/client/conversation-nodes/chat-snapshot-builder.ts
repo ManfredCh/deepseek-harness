@@ -1062,11 +1062,18 @@ function locationIdentity(location: ConversationLocation): string {
   return `${location.kind}:${coordinates.turn ?? ''}:${coordinates.step ?? ''}`
 }
 
-/** Chat target factory contributed to the Conversation view registry. */
+/**
+ * Chat target factory contributed to the Conversation view registry.
+ *
+ * Durable command outcomes are persistent, visible flow rows, so any assembled
+ * Node — including a command-only history — counts as Conversation activity and
+ * leaves the blank Hero to show it. A Session without any assembled Node keeps
+ * the Hero.
+ */
 export const chatViewDefinition: ConversationViewDefinition<ChatConversationViewNode, ChatSnapshot> = {
   target: 'chat',
   create: () => new ChatSnapshotBuilder(),
-  isActive: snapshot => snapshot.order.some(key => snapshot.nodes.get(key)?.kind !== 'command'),
+  isActive: snapshot => snapshot.order.length > 0,
 }
 
 /**
