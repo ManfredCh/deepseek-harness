@@ -174,8 +174,13 @@ export function AppFrame({
   const rightbarPreference = layoutInfo.rightbar ?? viewport * RIGHTBAR_DEFAULT_RATIO
   // Opening on a narrow frame collapses the left sidebar. Eligibility must
   // include that space before the occupant's first shown report arrives.
-  const normal = computeColumns(viewport, !layoutInfo.rightbarShown && narrow ? 0 : sidebarPreference, rightbarPreference)
-  const cols = computeColumns(viewport, sidebarPreference, layoutInfo.rightbarTrack ? rightbarPreference : 0)
+  const measured = computeColumns(viewport, !layoutInfo.rightbarShown && narrow ? 0 : sidebarPreference, rightbarPreference)
+  const stacked = Boolean(layoutInfo.rightbarAlongside && layoutInfo.rightbarTrack
+    && !layoutInfo.rightbarFullscreen && viewport - measured.sidebar < 900)
+  const normal = stacked
+    ? { ...measured, center: Math.max(0, viewport - measured.sidebar), rightbar: Math.max(0, viewport - measured.sidebar) }
+    : measured
+  const cols = stacked ? normal : computeColumns(viewport, sidebarPreference, layoutInfo.rightbarTrack ? rightbarPreference : 0)
   const colsRef = useRef(cols)
   colsRef.current = cols
   const rightbarWidth = useRef(normal.rightbar)
@@ -220,8 +225,9 @@ export function AppFrame({
       className={css.frame}
       style={{
         gridTemplateColumns:
-          `${cols.sidebar}px minmax(0, 1fr) ${cols.rightbar}px`,
+          stacked ? `${cols.sidebar}px minmax(0,1fr)` : `${cols.sidebar}px minmax(0, 1fr) ${cols.rightbar}px`,
       }}
+      data-workspace-stacked={stacked || undefined}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
       data-rightbar-collapsed={cols.rightbar === 0 || undefined}
       data-rightbar-fullscreen={layoutInfo.rightbarFullscreen || undefined}
@@ -247,7 +253,7 @@ export function AppFrame({
       </div>
       {/* The collapsed rail is fixed-width: no resize handle while closed. */}
       {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
-      {layoutInfo.rightbarShown && !layoutInfo.rightbarFullscreen && normal.rightbar > 0 && (
+      {layoutInfo.rightbarShown && !layoutInfo.rightbarFullscreen && !stacked && normal.rightbar > 0 && (
         <DragHandle side="rightbar" left={viewport - normal.rightbar} onStart={onRightbarStart} onDrag={onRightbarDrag} onEnd={onDragEnd} />
       )}
     </div>

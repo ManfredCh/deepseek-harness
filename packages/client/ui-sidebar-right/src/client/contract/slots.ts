@@ -38,6 +38,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 
   interface SlotMap {
+    /** 整个原生标签工作区的工具列，不随active正文切换。 */
+    'sidebar.right.surface.actions': { kind:'list';scope:'session';owner:{ activeTab?:TabRecord;expanded:boolean } }
     /** Session content selected by the root-scoped right Sidebar controller. */
     'rightbar.session': { kind: 'single'; scope: 'session'; owner: RightbarOwnerProps }
     /**

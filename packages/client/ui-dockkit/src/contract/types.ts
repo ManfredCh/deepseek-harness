@@ -91,6 +91,10 @@ export type LayoutNode = SplitNode | PaneNode
  * sharing it are deliberate copies of one thing.
  */
 export interface TabRecord {
+  /** 固定工作页：首位、不可关闭或移动。 */
+  readonly pinned?: boolean
+  /** 隐藏时保留正文实例。 */
+  readonly keepMounted?: boolean
   readonly id: TabId
   readonly kind: string
   readonly contentId: string

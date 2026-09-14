@@ -31,7 +31,7 @@ import type {
   DockMode, DockZone, FloatRect, History, LayoutOp, LayoutState, Mint, PaneId, SplitId, TabId, TabRecord,
 } from '@deepseek-ai/dsh-client-ui-dockkit'
 import {
-  activeDockPaneId, createInitialState, dockPaneIds, EMPTY_HISTORY, findPaneContentTab, findTabPane, getPane,
+  activeDockPaneId, createInitialState, dockPaneIds, EMPTY_HISTORY, findContentTab, findPaneContentTab, findTabPane, getPane,
   planDropTab, planDuplicateTab, planFloatTab, planOpenContent, planPlaceTab, planResizeSplit, planSetExpanded,
   planSetMode, planSettle, planSplitPane, planUnfloatPane, record, replay, stepBack, stepForward,
 } from '@deepseek-ai/dsh-client-ui-dockkit'
@@ -67,7 +67,7 @@ type SurfacePlan = (state: LayoutState, mint: Mint, makeTab: (id: TabId) => TabR
  */
 export function canCloseTab(surface: SurfaceState, tabId: TabId): boolean {
   const tab = surface.layout.tabs[tabId]
-  return tab !== undefined && !(tab.kind === GUIDE_KIND && soleDockedTab(surface.layout, tabId))
+  return tab !== undefined && !tab.pinned && !(tab.kind === GUIDE_KIND && soleDockedTab(surface.layout, tabId))
 }
 
 /** Build the currently selected default tab. */
@@ -81,6 +81,8 @@ function seedRecord(id: TabId, seed: () => SidebarRightSeed): TabRecord {
  * claimed. Placement is by `replaceTab` first, then `paneId`, then the active pane.
  */
 export interface OpenContentIntent {
+  readonly pinned?: boolean
+  readonly keepMounted?: boolean
   readonly kind: string
   readonly contentId: string
   readonly title: string
@@ -216,6 +218,7 @@ function seat(
 
 /** Declared write set; each entry is one settled intent. */
 type SidebarRightActions = {
+  ensurePinned: (draft: SidebarRightState, sessionId: string, pages: readonly OpenContentIntent[]) => void
   open: (draft: SidebarRightState, sessionId: string) => void
   setExpanded: (draft: SidebarRightState, sessionId: string, expanded: boolean) => void
   toggleExpanded: (draft: SidebarRightState, sessionId: string) => void
@@ -249,6 +252,7 @@ type HistoryStepper =
 /** Step a surface through the history in one direction. */
 function stepped(surface: SurfaceState, step: HistoryStepper): SurfaceState {
   const moved = step(surface.history, surface.layout)
+  if (moved && Object.values(surface.layout.tabs).some(tab=>tab.pinned && !moved.state.tabs[tab.id])) return surface
   return moved === undefined ? surface : { ...surface, layout: moved.state, history: moved.history }
 }
 
@@ -267,6 +271,22 @@ export function createSidebarRightStore(
   return defineStore({
     init: (): SidebarRightState => ({ bySession: {} }),
     actions: {
+      // 固定页在原生surface内建一次；后续分栏仍使用原来的guide播种。
+      ensurePinned: (d, sessionId: string, pages: readonly OpenContentIntent[]) => {
+        d.bySession = seat(d, sessionId, s => advance(s, (state, mint) => {
+          const ops: LayoutOp[] = []
+          let current = state
+          for (const page of pages) {
+            if (findContentTab(current, page.contentId, page.kind) !== undefined) continue
+            const planned = planOpenContent(current, mint, { kind:page.kind,contentId:page.contentId,title:page.title,index:0 })
+            const added = planned.ops.map(op => op.type === 'openTab' ? { ...op,tab:{ ...op.tab,pinned:true,...page.keepMounted?{ keepMounted:true }:{} } } : op)
+            ops.push(...added)
+            current = replay(current, added)
+          }
+          if (ops.length > 0) ops.push(...planSetExpanded(current, true))
+          return ops
+        }, seed))
+      },
       // Materialize a session's surface without changing it, so the first read
       // after a session switch sees the collapsed empty column rather than nothing.
       open: (d, sessionId: string) => { d.bySession = seat(d, sessionId, surface => surface) },
@@ -304,20 +324,26 @@ export function createSidebarRightStore(
       // landed on, synchronously, because actions return nothing.
       openContent: (d, sessionId: string, intent, settled) => {
         d.bySession = seat(d, sessionId, s => advance(s, (state, mint) => {
-          const { kind, contentId, title, replaceTab: replace } = intent
+          const { kind, contentId, title } = intent
+          const replace = intent.replaceTab !== undefined && !state.tabs[intent.replaceTab]?.pinned ? intent.replaceTab : undefined
           const ops: LayoutOp[] = [...planSetExpanded(state, true)]
           // A replaced tab lends its pane and slot; one that floats cannot (a
           // floating pane holds one tab), so the new tab lands as if unplaced.
           const replaced = replace === undefined ? undefined : findTabPane(state, replace)
           const lent = replace !== undefined && replaced !== undefined && replaced.host === 'dock' ? replaced : undefined
           const paneId = lent?.id ?? intent.paneId
-          const index = lent === undefined || replace === undefined ? undefined : lent.tabs.indexOf(replace)
+          const index = intent.pinned ? 0 : lent === undefined || replace === undefined ? undefined : Math.max(
+            lent.tabs.filter(id => state.tabs[id]?.pinned).length,
+            lent.tabs.indexOf(replace),
+          )
           // A page is unique per pane, not per surface: the pane it would land
           // in may already show it, which is then the tab this open settles on.
           // The same page in another pane never draws the open away — the kit's
           // cross-pane reveal is for resources only.
           const page = contentId === pageAddress(kind)
-          const held = page ? panePage(state, paneId ?? activeDockPaneId(state), kind) : undefined
+          const held = intent.pinned
+            ? findContentTab(state, contentId, kind)
+            : page ? panePage(state, paneId ?? activeDockPaneId(state), kind) : undefined
           const planned = held !== undefined
             ? { ops: [{ type: 'focusTab' as const, tabId: held }], tabId: held }
             : planOpenContent(state, mint, {
@@ -330,7 +356,7 @@ export function createSidebarRightStore(
                 ? { revealIfOpened: false }
                 : intent.revealIfOpened === undefined ? {} : { revealIfOpened: intent.revealIfOpened },
             })
-          ops.push(...planned.ops)
+          ops.push(...planned.ops.map(op=>op.type==='openTab'?{ ...op,tab:{ ...op.tab,...intent.pinned?{ pinned:true }:{},...intent.keepMounted?{ keepMounted:true }:{} } }:op))
           if (replace !== undefined && replace !== planned.tabId) ops.push({ type: 'closeTab', tabId: replace })
           settled(planned.tabId)
           return ops
@@ -339,7 +365,9 @@ export function createSidebarRightStore(
       // A page is never copied: the copy would sit beside it in the same pane.
       duplicateTab: (d, sessionId: string, tabId: TabId) => {
         d.bySession = seat(d, sessionId, s =>
-          advance(s, (state, mint) => pageKind(state, tabId) !== undefined ? [] : planDuplicateTab(state, mint, tabId).ops, seed))
+          advance(s, (state, mint) => state.tabs[tabId]?.pinned || pageKind(state, tabId) !== undefined
+            ? []
+            : planDuplicateTab(state, mint, tabId).ops, seed))
       },
       // A tab already gone — closed twice by a racing callback and the user — is
       // left alone rather than handed to the kit, which refuses an unknown tab.
@@ -365,14 +393,19 @@ export function createSidebarRightStore(
       },
       placeTab: (d, sessionId: string, tabId: TabId, toPaneId: PaneId, index: number) => {
         d.bySession = seat(d, sessionId, s =>
-          advance(s, state => arriving(state, tabId, toPaneId, () => planPlaceTab(state, tabId, toPaneId, index)), seed))
+          advance(s, state => state.tabs[tabId]?.pinned
+            ? []
+            : arriving(state, tabId, toPaneId, () => planPlaceTab(state, tabId, toPaneId, Math.max(
+              index,
+              getPane(state, toPaneId).tabs.filter(id => state.tabs[id]?.pinned).length,
+            ))), seed))
       },
       // Only a centre release lands in the target pane; an edge release makes a
       // new pane, where nothing can already be — and when the release drags a
       // pane's only tab to that pane's own edge, the default page backfills it.
       dropTab: (d, sessionId: string, tabId: TabId, paneId: PaneId, zone: DockZone) => {
         d.bySession = seat(d, sessionId, s => advance(s, (state, mint, makeTab) => {
-          if (zone === 'top' || zone === 'bottom') return []
+          if (state.tabs[tabId]?.pinned || zone === 'top' || zone === 'bottom') return []
           if (zone !== 'center' && dockPaneIds(state).length >= 2) return []
           const plan = (): readonly LayoutOp[] => planDropTab(state, mint, tabId, paneId, zone, makeTab)
           return zone === 'center' ? arriving(state, tabId, paneId, plan) : plan()
@@ -380,7 +413,7 @@ export function createSidebarRightStore(
       },
       floatTab: (d, sessionId: string, tabId: TabId, rect?: FloatRect) => {
         d.bySession = seat(d, sessionId, s =>
-          advance(s, (state, mint) => planFloatTab(state, mint, tabId, rect).ops, seed))
+          advance(s, (state, mint) => state.tabs[tabId]?.pinned ? [] : planFloatTab(state, mint, tabId, rect).ops, seed))
       },
       // A floating pane holds one tab; docking it back lands in the active
       // docked pane, and only a page is subject to the merge rule there.

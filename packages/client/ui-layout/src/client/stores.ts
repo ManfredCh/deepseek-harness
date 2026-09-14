@@ -6,7 +6,7 @@ import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-sto
 import type { MainPanelId } from './service.ts'
 import {
   clampWidth, RIGHTBAR_DEFAULT_RATIO, RIGHTBAR_MAX_RATIO, RIGHTBAR_MIN,
-  SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN,
+  SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN,
 } from './columns.ts'
 
 /**
@@ -40,6 +40,8 @@ type LayoutInfo = {
    * else writes it.
    */
   rightbarShown: boolean
+  /** 工作区与对话共同可见；窄窗改为上下排列。 */
+  rightbarAlongside?: boolean
   /**
    * Whether the normal panel width reserves a grid track, including beneath
    * fullscreen. Reported by the occupant; always false while hidden.
@@ -62,7 +64,7 @@ type LayoutActions = {
   toggleSidebar: (draft: LayoutState) => void
   setViewportWidth: (draft: LayoutState, width: number) => void
   setRightbar: (draft: LayoutState, px: number) => void
-  openRightbar: (draft: LayoutState, track: boolean, fullscreen: boolean) => void
+  openRightbar: (draft: LayoutState, track: boolean, fullscreen: boolean, alongside?: boolean) => void
   closeRightbar: (draft: LayoutState) => void
 }
 
@@ -124,17 +126,23 @@ export function createLayoutStore(): EngineStoreHandle<LayoutState, LayoutAction
         d.layoutInfo.rightbarInstant = false
         d.layoutInfo.rightbar = clampWidth(px, RIGHTBAR_MIN, Math.max(RIGHTBAR_MIN, d.layoutInfo.viewportWidth * RIGHTBAR_MAX_RATIO))
       },
-      openRightbar: (d, track: boolean, fullscreen: boolean) => {
+      openRightbar: (d, track: boolean, fullscreen: boolean, alongside = false) => {
+        if (alongside) d.layoutInfo.rightbarAlongside = true
+        else delete d.layoutInfo.rightbarAlongside
         if (!d.layoutInfo.rightbarShown || d.layoutInfo.rightbarTrack !== track || d.layoutInfo.rightbarFullscreen !== fullscreen) {
           d.layoutInfo.rightbarInstant = d.layoutInfo.rightbarFullscreen && !fullscreen
         }
         if (!d.layoutInfo.rightbarShown && d.layoutInfo.viewportWidth < SIDEBAR_AUTO_COLLAPSE) d.layoutInfo.narrowExpanded = false
-        d.layoutInfo.rightbar ??= Math.max(RIGHTBAR_MIN, Math.round(d.layoutInfo.viewportWidth * RIGHTBAR_DEFAULT_RATIO))
+        d.layoutInfo.rightbar ??= alongside
+          ? Math.max(RIGHTBAR_MIN, d.layoutInfo.viewportWidth
+            - (d.layoutInfo.viewportWidth < SIDEBAR_AUTO_COLLAPSE ? SIDEBAR_COLLAPSED : (d.layoutInfo.sidebar || SIDEBAR_COLLAPSED)) - 400)
+          : Math.max(RIGHTBAR_MIN, Math.round(d.layoutInfo.viewportWidth * RIGHTBAR_DEFAULT_RATIO))
         d.layoutInfo.rightbarShown = true
         d.layoutInfo.rightbarTrack = track
         d.layoutInfo.rightbarFullscreen = fullscreen
       },
       closeRightbar: (d) => {
+        delete d.layoutInfo.rightbarAlongside
         if (d.layoutInfo.rightbarShown) d.layoutInfo.rightbarInstant = d.layoutInfo.rightbarFullscreen
         d.layoutInfo.rightbarShown = false
         d.layoutInfo.rightbarTrack = false

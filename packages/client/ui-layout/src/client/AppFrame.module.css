@@ -97,3 +97,9 @@
 .overlayLayer > * {
   pointer-events: auto;
 }
+
+/* 固定工作区在窄窗与对话上下共显，不自动隐藏任何一列。 */
+.frame[data-workspace-stacked] { grid-template-rows:minmax(0,1fr) minmax(200px,34%); }
+.frame[data-workspace-stacked] .sidebarCol { grid-column:1;grid-row:1 / 3; }
+.frame[data-workspace-stacked] .rightbarCol { grid-column:2;grid-row:1;min-height:0; }
+.frame[data-workspace-stacked] .centerCol { grid-column:2;grid-row:2;min-height:0;border-top:1px solid var(--dsw-alias-border-l3); }

@@ -136,8 +136,8 @@ export function apply(ctx: ClientContext): void {
     }
     const layout: ILayout = ctx.layout
     const injected: Omit<SidebarRightInjected, 'keyedHooks' | 'occurrence' | 'closeTab'> = {
-      syncPresentation({ shown, track, fullscreen }) {
-        if (shown) layout.openRightbar(track, fullscreen)
+      syncPresentation({ shown, track, fullscreen, alongside }) {
+        if (shown) layout.openRightbar(track, fullscreen, alongside)
         else layout.closeRightbar()
       },
       bindService: binding => controller.bind(binding),
@@ -158,6 +158,7 @@ export function apply(ctx: ClientContext): void {
           'sidebar.right.pane.tab': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: tabInfoFactory } } },
           'sidebar.right.pane.tab.title': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: tabInfoFactory } } },
           'sidebar.right.tab.menu.item': { kind: 'list', scope: 'session' },
+          'sidebar.right.surface.actions': { kind:'list',scope:'session' },
         },
         store,
         inject: (sessionId): SidebarRightInjected => ({

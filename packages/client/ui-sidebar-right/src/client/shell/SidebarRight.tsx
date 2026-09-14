@@ -36,7 +36,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../contract/slots.ts'
 import type { DockIntents, DockMode, FloatRect, TabId, TabRecord, TabRenderer } from '@deepseek-ai/dsh-client-ui-dockkit'
-import { canSplit, dockPaneIds, DockSurface, findPaneContentTab, FloatLayer } from '@deepseek-ai/dsh-client-ui-dockkit'
+import { activeDockPaneId, getPane, canSplit, dockPaneIds, DockSurface, findPaneContentTab, FloatLayer } from '@deepseek-ai/dsh-client-ui-dockkit'
 import type { HalvesFit, LayoutState, PaneId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { GUIDE_KIND, pageAddress } from '../contract/seed.ts'
@@ -54,7 +54,7 @@ import css from './SidebarRight.module.css'
 type Store = PropsStore<ReturnType<typeof createSidebarRightStore>>
 
 /** The child seats this component renders. */
-type Children = PropsRenderSlots<'sidebar.right.pane.tab' | 'sidebar.right.pane.tab.title' | 'sidebar.right.tab.menu.item'>
+type Children = PropsRenderSlots<'sidebar.right.pane.tab' | 'sidebar.right.pane.tab.title' | 'sidebar.right.tab.menu.item' | 'sidebar.right.surface.actions'>
 
 /** What the panel reports to the frame: drawn or not, and whether it wants a track. */
 export interface SidebarRightPresentation {
@@ -64,6 +64,8 @@ export interface SidebarRightPresentation {
   readonly track: boolean
   /** Whether the panel fills the viewport, independently of its retained track. */
   readonly fullscreen: boolean
+  /** 固定工作页要求与对话同时可见。 */
+  readonly alongside?: boolean
 }
 
 /** What this package needs from its host beyond the framework shares. */
@@ -293,6 +295,8 @@ function PanelChrome({ sessionId, fullscreen, autoFullscreen, actions, t }: Pick
 function SidebarPanel(panel: PanelProps & { width: number; panelRef: RefObject<HTMLDivElement> }): ReactNode {
   const { sessionId, surface, actions, t, renderSlot, openTab, width, reportRoom, fullscreen, autoFullscreen, panelRef } = panel
   const { expanded } = surface.layout
+  const activeId = getPane(surface.layout,activeDockPaneId(surface.layout)).activeTabId
+  const activeTab = activeId === undefined ? undefined : surface.layout.tabs[activeId]
   return (
     <div
       ref={panelRef}
@@ -323,6 +327,7 @@ function SidebarPanel(panel: PanelProps & { width: number; panelRef: RefObject<H
           chrome={<PanelChrome sessionId={sessionId} fullscreen={fullscreen} autoFullscreen={autoFullscreen} actions={actions} t={t} />}
           onRoom={reportRoom}
         />
+        {renderSlot('sidebar.right.surface.actions',{ expanded,...activeTab===undefined?{}:{ activeTab } })}
       </div>
     </div>
   )
@@ -363,8 +368,20 @@ export function RightbarSeat({
   // adopted stores instead.
   const surfaces = useStore(state => state.bySession)
   const surface = surfaces[sessionId]
+  const tabTypes = useTabTypes(types=>types)
+  useEffect(() => {
+    const pinned = tabTypes.filter(type => type.pinned).map(type => ({
+      kind: type.kind,
+      contentId: pageAddress(type.kind),
+      title: type.title(pageAddress(type.kind)),
+      pinned: true,
+      ...type.keepMounted ? { keepMounted: true } : {},
+    }))
+    if (pinned.length) actions.ensurePinned(sessionId, pinned)
+  }, [actions, sessionId, tabTypes])
   const shown = surface !== undefined && surface.layout.expanded
-  const autoFullscreen = viewportWidth < 768
+  const alongside = surface !== undefined && Object.values(surface.layout.tabs).some(tab=>tab.pinned)
+  const autoFullscreen = !alongside && viewportWidth < 768
   const fullscreen = autoFullscreen || surface?.layout.mode === 'fullscreen'
   const panelRef = useRef<HTMLDivElement | null>(null)
   // The kit's room-rule readings, kept in a ref: the service reads them at
@@ -378,8 +395,8 @@ export function RightbarSeat({
   }, [actions, sessionId, surface])
 
   useLayoutEffect(() => {
-    if (shown && !fullscreen && !canShow) actions.setExpanded(sessionId, false)
-  }, [actions, sessionId, shown, fullscreen, canShow])
+    if (shown && !fullscreen && !canShow && !alongside) actions.setExpanded(sessionId, false)
+  }, [actions, sessionId, shown, fullscreen, canShow, alongside])
 
   // Fullscreen leaves the previous column report in force until its own slide
   // completes. Normal presentation and zero-duration transitions report before paint.
@@ -394,7 +411,7 @@ export function RightbarSeat({
           && animation.playState !== 'finished' && animation.playState !== 'idle')
         : []
       if (entering.length === 0) {
-        syncPresentation({ shown, track, fullscreen })
+        syncPresentation({ shown, track, fullscreen, alongside })
         return
       }
       // Cancellation can replace the transition or remove it for reduced motion.
@@ -402,7 +419,7 @@ export function RightbarSeat({
     }
     reportWhenCovered()
     return () => { disposed = true }
-  }, [sessionId, shown, track, fullscreen, syncPresentation])
+  }, [sessionId, shown, track, fullscreen, alongside, syncPresentation])
   // Leaving is part of that report: a seat that unmounts with its session must
   // hand the track back rather than leave one sized for a surface nobody draws.
   useLayoutEffect(() => () => { syncPresentation({ shown: false, track: false, fullscreen: false }) }, [syncPresentation])
