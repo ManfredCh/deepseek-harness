@@ -10,6 +10,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { ContextPressureProjection, TokenUsageProjection } from './projection.ts'
 import { foldSurfaceProjection } from './surface-projection.ts'
+import { checkoutSurfaceTokens } from './surface-fold.ts'
 
 const zeroBuckets = (): TokenUsageProjection => ({
   uncachedInputTokens: 0,
@@ -172,10 +173,15 @@ export const tokenUsageProjectionDefinition = {
  */
 export const contextPressureProjectionDefinition = {
   key: 'contextPressure',
-  stateVersion: 4,
+  stateVersion: 5,
   stateSchema: contextPressureStateSchema,
   init: () => ({ surfaceTokens: 0 }),
-  apply: (state, event) => {
+  apply: (state, event, history) => {
+    if (event.type === 'session/history-checkout') {
+      const surfaceTokens = checkoutSurfaceTokens(history).reduce((total, node) => total + node.heuristicTokens, 0)
+      const { claim: _claim, ...retained } = state
+      return { ...retained, surfaceTokens }
+    }
     const fold = foldSurfaceProjection(state.claim, event)
     let next = state
     if (event.type === 'request/context') {

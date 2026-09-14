@@ -270,6 +270,7 @@ export function assertV3Event(event: SessionFormatEvent, knownEventTypes?: Reado
     || RELEASED_V2_EVENT_DISPOSITIONS[event.type] !== undefined
     || event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch'
     || event.type === 'feedback/message-put' || event.type === 'feedback/message-delete'
+    || event.type === 'session/history-checkout'
     || knownEventTypes?.has(event.type) === true)
   const opaque = !known
   keys(value, ['type', 'seq', 'time', 'data'],

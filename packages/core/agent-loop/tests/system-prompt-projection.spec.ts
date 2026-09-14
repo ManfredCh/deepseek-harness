@@ -134,18 +134,19 @@ describe('SystemPromptProjection', () => {
     const ctx = await sessionStore()
     const session = ctx.sessions.create(SessionId('system-prompt-shadowed'))
     const projection = new SystemPromptProjection(session)
-    appendUser(session, 'before any prompt')
-    const late = projection.project('late prompt', REPLACING)[0]
+    commit(session, 1, projection.project('first prompt', CONTINUING)[0])
+    appendUser(session, 'before the later prompt')
+    const late = projection.project('late prompt', CONTINUING)[0]
     expect(late?.intent).toEqual({ surfaceOp: 'append' })
     const node = commit(session, 1, late)
-    expect(session.surface.nodes.indexOf(node.seq)).toBe(1)
-    expect(projection.project('late prompt', REPLACING)[0]).toBeUndefined()
+    expect(session.surface.nodes.indexOf(node.seq)).toBe(2)
+    expect(projection.project('late prompt', CONTINUING)[0]).toBeUndefined()
 
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'summary' }],
       source: { kind: 'plugin', plugin: 'test-compaction' },
     }), replaceOf(node.seq))
-    expect(projection.project('late prompt', REPLACING)[0]?.intent).toEqual({ surfaceOp: 'append' })
+    expect(projection.project('late prompt', CONTINUING)[0]?.intent).toEqual({ surfaceOp: 'append' })
   })
 
   it('appends a changed prompt after cached history on an in-history route while the series continues', async () => {

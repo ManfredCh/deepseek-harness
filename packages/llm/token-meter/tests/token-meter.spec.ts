@@ -142,6 +142,26 @@ describe('TokenMeter configuration and registration', () => {
 })
 
 describe('TokenMeter pricing', () => {
+  it.each(['', 'system head'])('keeps a late first system (%j) at the priced head through replay and updates', (argumentsText) => {
+    const service = meter()
+    const session = Session.create(SessionId('late-system-meter'))
+    const early = session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'queued before the first step' }], source: { kind: 'user' } }), { surfaceOp: 'append' }).seq
+    expect(service.measure(session).nodes.map(node => node.seq)).toEqual([early])
+    const head = appendSystem(session, argumentsText)
+    expect(service.measure(session).nodes.map(node => node.seq)).toEqual([head, early])
+    const later = appendSystem(session, 'in-history update')
+    expect(service.measure(session).nodes.map(node => node.seq)).toEqual([head, early, later])
+    const changed = replaceSystem(session, head, 'replacement head')
+    const measured = service.measure(session)
+    expect(measured.nodes.map(node => node.seq)).toEqual([changed, early, later])
+    expectSurfaceTotal(measured)
+    const replay = Session.fromRestore(session.id, session.snapshotEvents(), session.header, session.inheritedEventCount, 'shared-frozen')
+    const restored = meter().measure(replay)
+    expect(restored.nodes).toEqual(measured.nodes)
+    expect(restored.surfaceTokens).toBe(measured.surfaceTokens)
+    expect(restored.totalTokens).toBe(measured.totalTokens)
+  })
+
   it('prices every built-in content shape and merge-extended blocks with one fixed heuristic', () => {
     const service = meter()
     const blocks: ContentBlock[] = [

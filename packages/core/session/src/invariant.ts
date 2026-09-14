@@ -69,6 +69,9 @@ function validateEvent(
   // Context and plugin-owned log-only events may be appended between model
   // executions. Core execution events retain their explicit turn relations.
   switch (event.type) {
+    case 'session/history-checkout':
+      if (trace.openTurn !== null || trace.openStep !== null) fail('history checkout requires a stable turn boundary')
+      break
     case 'turn/start': {
       if (trace.openTurn !== null) {
         fail(`turn/start ${event.data.turn} while turn ${trace.openTurn} is still open`)

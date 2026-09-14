@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { canonicalHeader, isSurfaceEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { estimateToolsTokens } from './estimate.ts'
-import { commitSurfaceTokens, planSurfaceTokens } from './surface-fold.ts'
+import { checkoutSurfaceTokens, commitSurfaceTokens, planSurfaceTokens } from './surface-fold.ts'
 // Import for the `contextBreakdown` SessionProjectionStateMap key merge.
 import type {} from './projection.ts'
 
@@ -47,13 +47,18 @@ type ContextBreakdownState = z.infer<typeof contextBreakdownStateSchema>
  */
 export const contextBreakdownProjectionDefinition = {
   key: 'contextBreakdown',
-  stateVersion: 4,
+  stateVersion: 6,
   stateSchema: contextBreakdownStateSchema,
   init: (): ContextBreakdownState => ({
     nodes: [],
     breakdown: { systemTokens: 0, toolsTokens: 0, messageTokens: 0 },
   }),
-  apply: (state, event) => {
+  apply: (state, event, history) => {
+    if (event.type === 'session/history-checkout') {
+      const nodes = checkoutSurfaceTokens(history).map(({ seq, heuristicTokens, system }) => ({ seq, heuristicTokens, system }))
+      const systemTokens = nodes.findLast(node => node.system && node.heuristicTokens > 0)?.heuristicTokens ?? 0
+      return { nodes, breakdown: { systemTokens, toolsTokens: state.breakdown.toolsTokens, messageTokens: nodes.reduce((total, node) => total + node.heuristicTokens, 0) - systemTokens } }
+    }
     if (event.type === 'request/header') {
       const toolsTokens = estimateToolsTokens(canonicalHeader(event.data.header))
       return toolsTokens === state.breakdown.toolsTokens

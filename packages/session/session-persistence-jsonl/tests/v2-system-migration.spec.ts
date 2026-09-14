@@ -250,7 +250,7 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
     expect(await observeFile(sourcePath)).toEqual(original)
   })
 
-  it.each(['read', 'write'] as const)('refuses unsupported pre-step V2 during %s open without falling back to V1', async (access) => {
+  it.each(['read', 'write'] as const)('preserves pre-step V2 during %s open without falling back to V1', async (access) => {
     const sourcePath = await writeV2([
       { type: 'turn/start', data: { turn: 1 } }, user('too early'),
       { type: 'step/start', data: { turn: 1, step: 1 } }, request('cannot reorder'),
@@ -260,12 +260,16 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
     const original = await observeFile(sourcePath)
     const lower = await observeFile(lowerPath)
     const ctx = await mount()
-    await expect(ctx.sessionPersistence.open(id, access)).rejects.toBeInstanceOf(SessionFormatUnsupportedError)
-    await expect(ctx.sessionPersistence.open(id, access)).rejects.toThrow(/before first step/)
+    const handle = await ctx.sessionPersistence.open(id, access)
+    try {
+      const session = await restore(handle)
+      expect(session.snapshotEvents().slice(0, 3).map(event => event.type)).toEqual(['turn/start', 'user/message', 'step/start'])
+      expect(session.deriveMessages().map(message => message.role)).toEqual(['system', 'user'])
+    } finally { await handle.close() }
     expect(await observeFile(sourcePath)).toEqual(original)
     expect(await observeFile(lowerPath)).toEqual(lower)
     expect((await readdir(dirname(sourcePath))).filter(name => name !== 'session.lock').sort())
-      .toEqual(['session.v1.jsonl', 'session.v2.jsonl'])
+      .toEqual(access === 'write' ? ['session.v1.jsonl', 'session.v2.jsonl', 'session.v3.jsonl'] : ['session.v1.jsonl', 'session.v2.jsonl'])
   })
 
   it('persists native V3 system appends after the protected head without converting them to user messages', async () => {

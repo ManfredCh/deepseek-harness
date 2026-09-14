@@ -267,6 +267,8 @@ export type RequestHeaderReason = 'initial' | 'resume' | 'change' | 'series'
  * compact raw streams so persistence stores one durable settlement per attempt.
  */
 export interface SessionEventMap {
+  /** Required history branch switch; original events, identities and execution counters remain unchanged. */
+  'session/history-checkout': { throughSeq: SessionSeqCursor; operationId?: string }
   /**
    * Opens turn `turn` before the loop claims queued input or runs pre-step.
    * Rejection, empty input, cancellation, or failure may close it with no

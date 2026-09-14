@@ -14,6 +14,21 @@ function contextMessage(text: string) {
 }
 
 describe('RuntimeContextProjection', () => {
+  it('restores the selected branch context and does not invent a clear message after checkout to empty', async () => {
+    const ctx = new Context(); await ctx.plugin(SessionStore)
+    try {
+      const session = ctx.sessions.create(SessionId('runtime-context-checkout'))
+      const first = session.append('user/message', contextMessage('first context'), { surfaceOp: 'append' })
+      const projection = new RuntimeContextProjection(ctx, session)
+      session.append('user/message', contextMessage('later context'), { surfaceOp: 'append' })
+      expect(projection.project('later context', [])).toBeUndefined()
+      session.checkout(first.seq)
+      expect(projection.project('first context', [])).toBeUndefined()
+      expect(projection.project('later context', [])).toBeDefined()
+      session.checkout(-1)
+      expect(projection.project('', [])).toBeUndefined()
+    } finally { await ctx.fiber.dispose() }
+  })
   it('restores the latest visible owned snapshot and ignores other sessions', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

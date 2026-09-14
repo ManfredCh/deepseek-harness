@@ -8,7 +8,7 @@
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextSnapshotSection, Message } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionSeq, SurfaceIntent, SystemMessage, UserMessage } from '@deepseek-ai/dsh-session'
-import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session'
+import { isReplacementSurfaceEvent, selectActiveHistoryEvents } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 
 const SOURCE = '@deepseek-ai/dsh-system-prompt'
@@ -45,7 +45,7 @@ export interface SystemPromptDecisionInput {
 
 /** Committed events from the newest backward; the restore scans stop at the first match. */
 function eventsNewestFirst(session: Session): readonly SessionEvent[] {
-  return session.snapshotEvents().toReversed()
+  return selectActiveHistoryEvents(session.snapshotEvents()).toReversed()
 }
 
 /**
@@ -114,18 +114,23 @@ export class RuntimeContextProjection {
    * @param session - session receiving projected messages.
    */
   constructor(ctx: Context, session: Session) {
-    const surface = new Set(session.surface.nodes)
-    for (const event of eventsNewestFirst(session)) {
-      if (event.type !== 'user/message' || !isOwned(event.data)) continue
-      this.retained ??= null
-      if (surface.has(event.seq)) {
-        this.retained = { seq: event.seq, text: textOf(event.data) }
-        break
+    const restore = () => {
+      this.retained = undefined
+      const surface = new Set(session.surface.nodes)
+      for (const event of eventsNewestFirst(session)) {
+        if (event.type !== 'user/message' || !isOwned(event.data)) continue
+        this.retained ??= null
+        if (surface.has(event.seq)) {
+          this.retained = { seq: event.seq, text: textOf(event.data) }
+          break
+        }
       }
     }
+    restore()
 
     ctx.on('session/event', (subject, event) => {
       if (subject !== session) return
+      if (event.type === 'session/history-checkout') { restore(); return }
       if (event.type === 'user/message' && isOwned(event.data)) {
         this.retained = { seq: event.seq, text: textOf(event.data) }
       } else if (this.retained
