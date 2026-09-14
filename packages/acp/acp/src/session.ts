@@ -12,8 +12,8 @@ import {
 } from '@agentclientprotocol/sdk'
 import type { Agent, AgentHandle, AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, errorChain, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
-import { AcpContentError, admitAcpPrompt } from './content.ts'
+import { SessionLogOffset, type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
+import { AcpContentError, admitAcpPrompt, assistantBlockToAcp } from './content.ts'
 import { turnEndToStopReason } from './codec.ts'
 import { mountAcpMcpServers } from './mcp.ts'
 import { AcpModelControl } from './model-control.ts'
@@ -38,6 +38,8 @@ interface AcpSessionBuildOptions {
 /** Fresh ACP session construction inputs. */
 export interface CreateAcpSessionOptions extends AcpSessionBuildOptions {
   sessionId: SessionId
+  seed?: readonly SessionEvent[]
+  parentSession?: SessionId
 }
 
 /** Persisted ACP session construction inputs. */
@@ -127,10 +129,12 @@ export class AcpSession {
     const modelControl = new AcpModelControl(ctx.llm, options.fallbackSelection)
     const handle = await ctx.agents.create({
       sessionId: options.sessionId,
-      meta: { cwd: options.cwd },
+      meta: { cwd: options.cwd, ...(options.seed ? { parentSession: options.parentSession!, isSeeded: true } : {}) },
+      ...(options.seed ? { seed: options.seed, inheritedEventCount: SessionLogOffset(options.seed.length) } : {}),
       agentOptions: options.agentOptions,
       signal: options.signal,
-      setup: async (agentCtx) => {
+      setup: async (agentCtx, agent) => {
+        if (options.seed) modelControl.selection.current = selectionFor(agent.session.requestHeader(), options.fallbackSelection)
         modelControl.install(agentCtx)
         await mountAcpMcpServers(agentCtx, options.mcpServers, options.cwd)
       },
@@ -184,6 +188,27 @@ export class AcpSession {
    */
   ownsSession(session: Session): boolean {
     return this.agent.session === session
+  }
+
+  /** Replay committed user/assistant/tool history for session/load and session/fork. */
+  async replayHistory(): Promise<void> {
+    this.assertActive()
+    for (const event of this.agent.session.snapshotEvents()) {
+      if (event.type === 'user/message' && event.data.source.kind === 'user') {
+        for (const block of event.data.content) {
+          const content = await assistantBlockToAcp(this.ctx, block)
+          if (content) await this.notify({ sessionId: this.agent.session.id, update: { sessionUpdate: 'user_message_chunk', messageId: event.data.id, content } })
+        }
+      } else if (event.type === 'assistant/message') {
+        for (const update of await assistantUpdates(this.ctx, this.agent.session, event)) {
+          if (update.sessionUpdate !== 'usage_update') await this.notify({ sessionId: this.agent.session.id, update })
+        }
+      } else if (event.type === 'tool/call') {
+        await this.notify({ sessionId: this.agent.session.id, update: toolCallUpdate(event) })
+      } else if (event.type === 'tool/result') {
+        await this.notify({ sessionId: this.agent.session.id, update: await toolResultUpdate(this.ctx, event) })
+      }
+    }
   }
 
   /**
