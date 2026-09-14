@@ -4,6 +4,8 @@ import { SessionFormatError, SessionFormatUnsupportedMigrationError } from '@dee
 import type { SessionFormatArtifact, SessionFormatEvent, SessionFormatHeader } from '@deepseek-ai/dsh-session-format'
 import { assertReleasedV2Header, restoreReleasedV2Artifact } from '@deepseek-ai/dsh-session-format-v1-to-v2'
 import { assertV3Event, isRepairIdentity, record, SURFACE_TYPES } from './payload.ts'
+import { assertHistoryCheckoutEvent, SurfaceManager } from '@deepseek-ai/dsh-session/surface'
+import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 
 /**
  * Validate v3 logical metadata with the released-v2 fields.
@@ -25,10 +27,22 @@ export function restoreReleasedV3Artifact(artifact: SessionFormatArtifact, known
   assertReleasedV3Header(artifact.header)
   let step: { turn: unknown; step: unknown } | undefined
   let head: number | undefined
-  let hasSurface = false
+  let firstSurfaceHeadSeq: number | undefined
+  const prefix: SessionEvent[] = []
+  const surface = artifact.events.some(event => event.type === 'session/history-checkout') ? new SurfaceManager(prefix) : undefined
+  const surfaceCheckouts = new Map<number, readonly number[]>(), surfaceHeadSeqs = new Set<number>()
   const events = artifact.events.map((event): SessionFormatEvent => {
     assertV3EventAdmission(event)
     assertV3Event(event, knownEventTypes)
+    const previousHead = surface?.nodes[0] ?? head
+    try { surface?.validateNext(event as unknown as SessionEvent) }
+    catch (error) { throw new SessionFormatError(error instanceof Error ? error.message : String(error)) }
+    prefix.push(event as unknown as SessionEvent)
+    if (event.type === 'session/history-checkout') {
+      surfaceCheckouts.set(event.seq, [...surface!.nodes])
+      const restoredHead = surface!.nodes[0]
+      head = restoredHead !== undefined && prefix[restoredHead]?.type === 'system/message' ? restoredHead : undefined
+    }
     const system = event.type === 'system/message'
     if (event.type === 'step/start') {
       const data = record(event.data, event.type)
@@ -40,9 +54,15 @@ export function restoreReleasedV3Artifact(artifact: SessionFormatArtifact, known
         throw new SessionFormatError('system/message does not match an open step')
       }
       const operation = event['surfaceOp']
-      if (hasSurface && head === undefined) throw new SessionFormatError('system/message requires a protected first surface head')
       if (operation === 'append') {
-        if (!hasSurface) head = event.seq
+        // The first real step can follow queued/imported user messages.
+        // Its system node becomes the protected projection head without
+        // moving any event in the durable chronology.
+        if (head === undefined) {
+          head = event.seq
+          firstSurfaceHeadSeq = event.seq
+          if (previousHead === undefined || prefix[previousHead]?.type !== 'system/message') surfaceHeadSeqs.add(event.seq)
+        }
       } else {
         const replace = record(operation, 'system replacement')
         if (replace['startSeq'] === head || replace['endSeq'] === head) {
@@ -63,14 +83,16 @@ export function restoreReleasedV3Artifact(artifact: SessionFormatArtifact, known
         throw new SessionFormatError('compaction cannot shadow the protected system head')
       }
     }
-    if (SURFACE_TYPES.has(event.type)) hasSurface = true
     const projected = relationshipEvent(event)
     if (!SURFACE_TYPES.has(event.type) || event['surfaceOp'] === 'append') return projected
     const replacement = event['surfaceOp'] as { readonly startSeq: number; readonly endSeq: number }
     // Only the frozen relationship view uses released endpoint names.
     return { ...projected, surfaceOp: { op: 'replace', start: replacement.startSeq, end: replacement.endSeq } }
   })
-  restoreReleasedV2Artifact({ ...artifact, header: { ...artifact.header, version: 2 }, events }, knownEventTypes, 3)
+  restoreReleasedV2Artifact(
+    { ...artifact, header: { ...artifact.header, version: 2 }, events }, knownEventTypes, 3,
+    { ...(firstSurfaceHeadSeq === undefined ? {} : { firstSurfaceHeadSeq }), surfaceHeadSeqs, surfaceCheckouts },
+  )
   return artifact
 }
 
@@ -79,6 +101,10 @@ export function restoreReleasedV3Artifact(artifact: SessionFormatArtifact, known
  * @param event - event envelope whose type and ignorable admission markers are available.
  */
 export function assertV3EventAdmission(event: SessionFormatEvent): void {
+  if (event.type === 'session/history-checkout') {
+    try { assertHistoryCheckoutEvent(event) }
+    catch (error) { throw new SessionFormatError(error instanceof Error ? error.message : String(error)) }
+  }
   if ((event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch')
     && event['ignorable'] !== true) {
     throw new SessionFormatUnsupportedMigrationError(

@@ -15,10 +15,11 @@ import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type { Message } from '@deepseek-ai/dsh-llm'
 import { SESSION_FORMAT_VERSION, SessionLogOffset, SessionSeq } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
-import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SurfaceIntent, SurfaceEventType } from './types.ts'
+import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SessionSeqCursor, SurfaceIntent, SurfaceEventType } from './types.ts'
 import { SurfaceManager, validateSessionEventData, validateSurfaceMetadata } from './surface.ts'
 import type { SessionSurface, SessionMessageProjection } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
+import { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 
 export * from './types.ts'
 export { SessionPreparation } from './preparation.ts'
@@ -29,6 +30,7 @@ export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult, Session
 export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType } from './surface.ts'
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
+export { assertStableHistoryBoundary, selectActiveHistoryEvents } from './history.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -719,9 +721,13 @@ export class Session {
   append<T extends SessionEventType>(
     type: T,
     data: SessionEventMap[T],
-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent<T>] : []
+    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent<T>] : [opts?: { ignorable: true }]
   ): SessionEvent<T> {
-    const surfaceOpts: SurfaceIntent | undefined = opts[0]
+    const surfaceOpts = opts[0] as (SurfaceIntent & { ignorable?: true }) | undefined
+    if (surfaceOpts?.ignorable === true && (KNOWN_SESSION_EVENT_TYPES.has(type)
+      || surfaceOpts.surfaceOp !== undefined || surfaceOpts.sourceEventSeqs !== undefined)) {
+      throw new Error('only external log-only Session events may be informational')
+    }
     const surfaceMetadata = {
       ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
       ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
@@ -743,6 +749,7 @@ export class Session {
       seq: SessionSeq(this.log.length),
       time: Date.now(),
       data: dataSnapshot,
+      ...(surfaceOpts?.ignorable === true ? { ignorable: true as const } : {}),
       ...(surfaceMetadataSnapshot as { surfaceOp?: unknown; sourceEventSeqs?: unknown }),
     } as unknown as SessionEvent<T>)
     validateSessionEventData(event, `session event "${type}" at seq ${event.seq}`)
@@ -767,6 +774,11 @@ export class Session {
         if (entry.detachRequested && !entry.announcing) entry.detach()
       }
     }
+  }
+
+  /** Restore an earlier stable history surface by appending a required event, without deleting any original event. */
+  checkout(throughSeq: SessionSeqCursor, options: { operationId?: string } = {}): SessionEvent<'session/history-checkout'> {
+    return this.append('session/history-checkout', { throughSeq, ...(options.operationId === undefined ? {} : { operationId: options.operationId }) })
   }
 
   /** Cached fold of the request-header events — see {@link requestHeader}. */

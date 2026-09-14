@@ -23,7 +23,7 @@ import type {
   StreamChunk,
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import SessionStore, { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, SessionSeq, isAppendSurfaceEvent, selectActiveHistoryEvents } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import { agentEvents, type Agent, type RequestErrorAction } from '@deepseek-ai/dsh-agent'
@@ -662,6 +662,46 @@ describe('pressure measurement and retention', () => {
     })
     expect(compact.calls[0]!.input.messages[0]).toEqual(session.deriveMessages()[0])
     expect(compact.calls[0]!.input.messages.filter(message => message.role === 'system')).toHaveLength(1)
+  })
+
+  it('compacts the checked-out surface while retaining selected append-origin human history', async () => {
+    const ctx = createContext(), compact = service(compactConfig, ctx)
+    const session = conversation(5, undefined, 'CHECKOUT HEAD')
+    session.append('turn/end', { turn: 6, reason: { kind: 'completed' } })
+    const original = session.snapshotEvents(), target = original.find(event => event.type === 'turn/end' && event.data.turn === 3)!
+    const expectedHuman = original.filter(event => event.seq <= target.seq && isAppendSurfaceEvent(event)).map(event => event.seq)
+    ctx.tokenMeter.measure(session)
+    session.checkout(target.seq)
+    session.append('turn/start', { turn: 7 })
+    const before = session.snapshotEvents(), head = session.surface.nodes[0]
+    const result = await compactIfNeeded(compact, session)
+    expect(result).not.toBeNull()
+    expect(result?.shadowedSeqs.every(seq => seq <= target.seq)).toBe(true)
+    expect(result?.shadowedSeqs).not.toContain(head)
+    expect(ctx.tokenMeter.measure(session).nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(selectActiveHistoryEvents(session.snapshotEvents()).filter(isAppendSurfaceEvent).map(event => event.seq)).toEqual(expectedHuman)
+    expect(session.snapshotEvents().slice(0, before.length)).toEqual(before)
+  })
+
+  it('compacts queued history after a late first system without shadowing the protected head', async () => {
+    const ctx = createContext()
+    const compact = service(compactConfig, ctx)
+    const session = conversation(4)
+    const firstUser = session.surface.nodes[0]!
+    ctx.tokenMeter.measure(session)
+    const head = session.append('system/message', { turn: 5, step: 1, message: createSystemMessage('LATE SYSTEM HEAD', SYSTEM_PROMPT_PLUGIN) }, { surfaceOp: 'append' }).seq
+    const before = session.snapshotEvents()
+    const measured = ctx.tokenMeter.measure(session)
+    expect(measured.nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(selectCompactableRange(session, measured, compactConfig.retainTokens!)?.start).toBe(firstUser)
+    const result = await compactIfNeeded(compact, session)
+    expect(result).not.toBeNull()
+    expect(result?.shadowedSeqs).not.toContain(head)
+    expect(session.surface.nodes[0]).toBe(head)
+    expect(compact.calls[0]!.input.messages[0]).toEqual(session.deriveEventMessage(session.eventAt(head)!))
+    expect(compact.calls[0]!.input.messages.filter(message => message.role === 'system')).toHaveLength(1)
+    expect(ctx.tokenMeter.measure(session).nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(session.snapshotEvents().slice(0, before.length)).toEqual(before)
   })
 
   it('declines when only the system head precedes the retained tail', () => {

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { SessionFormatError, SessionFormatUnsupportedMigrationError, defineSessionFormatMigration, sessionFormatCount } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatEvent, SessionFormatEventRun, SessionFormatJsonObject, SessionFormatJsonValue, SessionFormatMigrationContext, SessionFormatMigrationStage, SessionFormatMigrationStageInput } from '@deepseek-ai/dsh-session-format'
 import { assertReleasedV2Header } from '@deepseek-ai/dsh-session-format-v1-to-v2'
-import { assertEvent, canonicalizeTransformedEvent, record, SURFACE_TYPES } from './payload.ts'
+import { assertEvent, canonicalizeTransformedEvent, record } from './payload.ts'
 import { remapEvent } from './references.ts'
 import { assertReleasedV3Header } from './validation.ts'
 
@@ -53,9 +53,8 @@ class ReleasedV2ToV3Stage implements SessionFormatMigrationStage {
       if (prompt !== this.prompt) this.emitSystem(prompt, event, context)
       source = { ...event, data: { ...data, header } }
     }
-    if (SURFACE_TYPES.has(event.type) && this.head === undefined) {
-      throw new SessionFormatUnsupportedMigrationError('format v2 surface before first step cannot acquire a system head without changing chronology')
-    }
+    // A queued user surface can predate the first model step. Preserve that
+    // chronology; the first real step owns system promotion, if one exists.
     if (event.type === 'session/end-seed' && data['inherited'] === true) {
       if (!this.input.sourceHeader.isSeeded) throw new SessionFormatError('format v2 unseeded Session contains an inherited end-seed marker')
       this.sourceCut = event.seq

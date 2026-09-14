@@ -292,7 +292,7 @@ describe('contextBreakdown session projection', () => {
     const first = appendUser(session, 'first message')
     const last = appendUser(session, 'last message')
     const definition = contextBreakdownProjectionDefinition
-    const state = session.snapshotEvents().reduce(definition.apply, definition.init())
+    const state = session.snapshotEvents().reduce((previous, event) => definition.apply(previous, event), definition.init())
     const before = JSON.stringify(state)
     const replacement = session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'summary' }], source: { kind: 'user' },
@@ -382,7 +382,7 @@ describe('contextBreakdown session projection', () => {
     const { session } = await harness()
     const head = appendSystem(session, 'head')
     const definition = contextBreakdownProjectionDefinition
-    const state = session.snapshotEvents().reduce(definition.apply, definition.init())
+    const state = session.snapshotEvents().reduce((previous, event) => definition.apply(previous, event), definition.init())
     replaceSystem(session, head, 'same')
     const next = definition.apply(state, session.snapshotEvents().at(-1)!)
     expect(next).not.toBe(state)
@@ -405,7 +405,7 @@ describe('contextBreakdown session projection', () => {
       ctx.sessionProjections.checkpoint(session),
     )) as ReturnType<typeof ctx.sessionProjections.checkpoint>
     const row = checkpoint['contextBreakdown']!
-    expect(row.ver).toBe(5)
+    expect(row.ver).toBe(6)
     expect(ctx.sessionProjections.viewCheckpoint(checkpoint).contextBreakdown).toEqual(projected(ctx, session))
     const replacement = session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'summary' }], source: { kind: 'user' },
@@ -424,7 +424,7 @@ describe('contextBreakdown session projection', () => {
       stale, session.snapshotEvents(), SessionLogOffset(0), session.header, session.inheritedEventCount,
     )
     expect(replayed.snapshot.values.contextBreakdown).toEqual(projected(ctx, session))
-    expect(replayed.checkpoint['contextBreakdown']?.ver).toBe(5)
+    expect(replayed.checkpoint['contextBreakdown']?.ver).toBe(6)
     const invalid = {
       ...checkpoint,
       contextBreakdown: {
@@ -435,6 +435,24 @@ describe('contextBreakdown session projection', () => {
     expect(() => ctx.sessionProjections.restore(
       invalid, session.snapshotEvents(), SessionLogOffset(0), session.header, session.inheritedEventCount,
     )).toThrow()
+  })
+
+  it('replays version-4 positional checkpoints that placed a late system after queued users', async () => {
+    const { ctx, session } = await harness()
+    const user = appendUser(session, 'queued user')
+    const head = appendSystem(session, 'system head')
+    const current = ctx.sessionProjections.checkpoint(session)
+    const row = current['contextBreakdown']!
+    const state = ctx.sessionProjections.stateOf(session, 'contextBreakdown')!
+    expect(state.nodes.map(node => node.seq)).toEqual([head, user])
+    const stale = { ...current, contextBreakdown: { ...row, ver: 4, val: { ...state, nodes: [...state.nodes].reverse() } } }
+    expect(ctx.sessionProjections.viewCheckpoint(stale).contextBreakdown).toBeUndefined()
+    expect(ctx.sessionProjections.restoreFloor(stale)).toBe(0)
+    const restored = ctx.sessionProjections.restore(
+      stale, session.snapshotEvents(), SessionLogOffset(0), session.header, session.inheritedEventCount,
+    )
+    expect(restored.checkpoint).toEqual(current)
+    expect(restored.checkpoint['contextBreakdown']?.ver).toBe(6)
   })
 
   it('discards lower-layer version-3 scalar caches and refolds the full surface', async () => {
@@ -458,7 +476,7 @@ describe('contextBreakdown session projection', () => {
         systemTokens: 8, toolsTokens: staleValue.toolsTokens, messageTokens: 9,
       })
       expect(restored.checkpoint).toEqual(current)
-      expect(restored.checkpoint['contextBreakdown']?.ver).toBe(5)
+      expect(restored.checkpoint['contextBreakdown']?.ver).toBe(6)
     } finally {
       await ctx.fiber.dispose()
     }

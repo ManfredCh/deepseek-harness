@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, LlmError, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import SessionStore, { Session, SessionId, foldRequestHeader } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, SessionLogOffset, foldRequestHeader } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
@@ -73,6 +74,34 @@ function registerEcho(ctx: Context) {
 }
 
 describe('request stability across the loop', () => {
+  it('rebuilds a native request after checkout without the undone user/answer or duplicated system', async () => {
+    const adapter = new MockAdapter([textResponse('answer A'), textResponse('answer B'), textResponse('answer C')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('request-checkout'), { provider: 'mock', model: 'mock' })
+      const prefixes: (readonly SessionEvent[])[] = []
+      ctx.on('llm/stream', (_request, next) => { prefixes.push(agent.session.snapshotEvents()); return next() }, { prepend: true })
+      send(agent, 'user A'); await agent.whenIdle()
+      const firstEnd = agent.session.snapshotEvents().at(-1)!.seq
+      send(agent, 'user B'); await agent.whenIdle()
+      const original = agent.session.snapshotEvents()
+      const marker = agent.session.checkout(firstEnd)
+      send(agent, 'user C'); await agent.whenIdle()
+      expect(adapter.requests).toHaveLength(3)
+      const last = adapter.requests[2]!
+      expect(JSON.stringify(last.messages)).not.toContain('user B')
+      expect(JSON.stringify(last.messages)).not.toContain('answer B')
+      expect(JSON.stringify(last.messages)).toContain('user A')
+      expect(JSON.stringify(last.messages)).toContain('user C')
+      expect(last.messages.filter(message => message.role === 'system')).toHaveLength(1)
+      const replay = Session.fromRestore(agent.id, prefixes[2]!, agent.session.header, SessionLogOffset(0), 'shared-frozen')
+      expect(replay.deriveMessages()).toEqual(last.messages)
+      expect(agent.session.snapshotEvents(0 as SessionLogOffset, original.length as SessionLogOffset)).toEqual(original)
+      expect(agent.session.snapshotEvents()
+        .flatMap(event => event.type === 'request/header' && event.seq > marker.seq ? [event.data.reason] : []))
+        .toEqual(['series'])
+    } finally { await ctx.fiber.dispose() }
+  })
   it('each step request within a turn append-extends the previous, frozen end to end', async () => {
     const adapter = new MockAdapter([
       toolCallResponse('c1', 'echo', { text: 'one' }, 'first'),
@@ -620,7 +649,8 @@ describe('request stability across the loop', () => {
     const appended = adapter.requests[2]!.messages.slice(adapter.requests[1]!.messages.length)
     expect(appended.map(message => message.role)).toEqual(['assistant', 'system', 'user'])
     expect(appended[1]?.content).toContainEqual({ type: 'text', text: expect.stringContaining('new guidance') as unknown })
-    expect(adapter.requests[2]!.messages[0]?.content).not.toContainEqual({ type: 'text', text: expect.stringContaining('new guidance') as unknown })
+    expect(adapter.requests[2]!.messages[0]?.content)
+      .not.toContainEqual({ type: 'text', text: expect.stringContaining('new guidance') as unknown })
 
     // An unchanged prompt adds nothing on the next step.
     send(agent, 'fourth')

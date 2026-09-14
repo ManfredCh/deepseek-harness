@@ -118,8 +118,11 @@ describe('streaming V2 system prompt migration', () => {
     expect(() => migrate([event('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [user(id)] }), ...input])).toThrow(/collides/)
   })
 
-  it('refuses pre-step surfaces and changed prompts outside a step rather than reorder source history', () => {
-    expect(() => migrate([event('user/message', user(), 'append'), ...opening()])).toThrow(/before first step/)
+  it('retains pre-step surfaces while refusing changed prompts outside a step', () => {
+    const source = [event('user/message', user(), 'append'), ...opening()]
+    const target = migrate(source)
+    expect(target.events.slice(0, 3).map(row => row.type)).toEqual(['user/message', 'turn/start', 'step/start'])
+    expect(target.events[0]?.data).toEqual(source[0]?.data)
     expect(() => migrate([event('turn/start', { turn: 1 }), event('request/header', request('early')), event('step/start', { turn: 1, step: 1 })])).toThrow(/outside an open step/)
     expect(() => migrate([...opening(), event('step/end', { turn: 1, step: 1 }), event('request/header', request('late'))])).toThrow(/outside an open step/)
   })

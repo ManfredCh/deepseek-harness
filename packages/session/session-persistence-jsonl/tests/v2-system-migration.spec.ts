@@ -2,7 +2,6 @@ import { freezeMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { SessionFormatUnsupportedError } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
@@ -198,7 +197,9 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
       prepared = (await reader.read()).events
       expect(reader.inheritedEventCount).toBe(14)
       expect(prepared[7]).toMatchObject({ type: 'compaction/prune', data: { shadowedRange: { start: 3, end: 6 }, shadowedSeqs: [3, 6] } })
-      expect(prepared[8]).toMatchObject({ type: 'user/message', surfaceOp: { op: 'replace', startSeq: 3, endSeq: 6 }, sourceEventSeqs: [3, 6] })
+      expect(prepared[8]).toMatchObject({
+        type: 'user/message', surfaceOp: { op: 'replace', startSeq: 3, endSeq: 6 }, sourceEventSeqs: [3, 6],
+      })
       expect(prepared[10]).toMatchObject({ type: 'command/done', data: { sourceEventSeq: 8 } })
       expect(prepared[11]).toMatchObject({ type: 'session/title', data: { messageSeqs: [3, 6] } })
       expect(prepared[14]).toMatchObject({ type: 'session/end-seed', seq: 14, data: { inherited: true } })
@@ -223,7 +224,10 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
       session.append('step/start', { turn: 2, step: 1 })
       session.append('system/message', {
         turn: 2, step: 1,
-        message: freezeMessage({ role: 'system', id: MessageId('resumed-system'), content: [{ type: 'text', text: 'resumed prompt' }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } }),
+        message: freezeMessage({
+          role: 'system', id: MessageId('resumed-system'),
+          content: [{ type: 'text', text: 'resumed prompt' }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+        }),
       }, { surfaceOp: { op: 'replace', startSeq: SessionSeq(4), endSeq: SessionSeq(4) }, sourceEventSeqs: [SessionSeq(4)] })
       session.append('step/end', { turn: 2, step: 1 })
       session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
@@ -250,7 +254,7 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
     expect(await observeFile(sourcePath)).toEqual(original)
   })
 
-  it.each(['read', 'write'] as const)('refuses unsupported pre-step V2 during %s open without falling back to V1', async (access) => {
+  it.each(['read', 'write'] as const)('preserves pre-step V2 during %s open without falling back to V1', async (access) => {
     const sourcePath = await writeV2([
       { type: 'turn/start', data: { turn: 1 } }, user('too early'),
       { type: 'step/start', data: { turn: 1, step: 1 } }, request('cannot reorder'),
@@ -260,12 +264,16 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
     const original = await observeFile(sourcePath)
     const lower = await observeFile(lowerPath)
     const ctx = await mount()
-    await expect(ctx.sessionPersistence.open(id, access)).rejects.toBeInstanceOf(SessionFormatUnsupportedError)
-    await expect(ctx.sessionPersistence.open(id, access)).rejects.toThrow(/before first step/)
+    const handle = await ctx.sessionPersistence.open(id, access)
+    try {
+      const session = await restore(handle)
+      expect(session.snapshotEvents().slice(0, 3).map(event => event.type)).toEqual(['turn/start', 'user/message', 'step/start'])
+      expect(session.deriveMessages().map(message => message.role)).toEqual(['system', 'user'])
+    } finally { await handle.close() }
     expect(await observeFile(sourcePath)).toEqual(original)
     expect(await observeFile(lowerPath)).toEqual(lower)
     expect((await readdir(dirname(sourcePath))).filter(name => name !== 'session.lock').sort())
-      .toEqual(['session.v1.jsonl', 'session.v2.jsonl'])
+      .toEqual(access === 'write' ? ['session.v1.jsonl', 'session.v2.jsonl', 'session.v3.jsonl'] : ['session.v1.jsonl', 'session.v2.jsonl'])
   })
 
   it('persists native V3 system appends after the protected head without converting them to user messages', async () => {
@@ -277,12 +285,20 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
       session.append('step/start', { turn: 1, step: 1 })
       session.append('system/message', {
         turn: 1, step: 1,
-        message: freezeMessage({ role: 'system', id: MessageId('head'), content: [{ type: 'text', text: 'head prompt' }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } }),
+        message: freezeMessage({
+          role: 'system', id: MessageId('head'),
+          content: [{ type: 'text', text: 'head prompt' }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+        }),
       }, { surfaceOp: 'append' })
-      session.append('user/message', freezeMessage({ role: 'user', id: MessageId('question'), content: human.content, source: { kind: 'user' } }), { surfaceOp: 'append' })
+      session.append('user/message', freezeMessage({
+        role: 'user', id: MessageId('question'), content: human.content, source: { kind: 'user' },
+      }), { surfaceOp: 'append' })
       session.append('system/message', {
         turn: 1, step: 1,
-        message: freezeMessage({ role: 'system', id: MessageId('context'), content: [{ type: 'text', text: 'tail context' }], source: { kind: 'plugin', plugin: 'context-plugin' } }),
+        message: freezeMessage({
+          role: 'system', id: MessageId('context'),
+          content: [{ type: 'text', text: 'tail context' }], source: { kind: 'plugin', plugin: 'context-plugin' },
+        }),
       }, { surfaceOp: 'append' })
       session.append('step/end', { turn: 1, step: 1 })
       session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })

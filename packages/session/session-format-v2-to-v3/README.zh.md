@@ -65,7 +65,7 @@ const targetHeader = sessionFormatV2ToV3.migrateHeader(sourceHeader)
 <a id="system-head"></a>
 ### 系统头节点与消息身份
 
-首个 `step/start` 后立即追加空 `system/message`，即使该步骤在发出请求前中止。后续步骤不再创建头节点。没有步骤也没有 surface 的日志不会获得头节点或虚构请求。
+首个 `step/start` 后立即追加空 `system/message`，即使该步骤在发出请求前中止。后续步骤不再创建头节点。首个步骤前的排队用户消息保留事件位置，首条系统追加占据投影首位。没有步骤的日志不会获得头节点或虚构请求。
 
 在每条 `request/header` 处，缺失的 `data.header.system` 表示空提示词；否则，其字符串与当前提示词进行精确比较。发生变化时，在该请求头之前立即插入系统消息，恰好替换当前受保护的头节点，并在 `sourceEventSeqs` 中引用它。提示词不变时不插入消息。空字符串和缺失字段会清空先前的提示词；仅含空白的字符串仍为非空文本。每个请求头都会移除 `data.header.system`，无论是否需要替换。
 
@@ -133,7 +133,7 @@ V2 `session-log-deepseek/delivery-accepted` 若携带 `data.sessionFormatVersion
 
 准入不改写内容。特别是，内嵌流虽然接受归本格式所有的块字段检查，其字节仍保持不变。工具参数、`replayState.response` 和 `replayState.blocks` 保持不透明；任意 JSON 内的同名字段不会触发此审计。文件附件元数据接受校验，但标识或字节计数不会被解释为 Session 引用。这不是通用 schema 审计或递归坐标推断，原生 V3 扩展准入与此分开。
 
-首个步骤前的 surface 事件、开放步骤外的提示词变化或生成标识冲突，会抛出 `SessionFormatUnsupportedMigrationError`，而非移动事件或虚构归属。源字段格式错误、缺失位置、无效引用、不一致切点、投递违规与矛盾工具结果，会在直接阶段或目标校验器中抛出格式错误。目录将迁移阶段和转换后目标校验失败报告为类型化的不支持迁移；物理解码失败仍按所选恢复策略归类为损坏。本迁移边不修复源或目标，不回退代次，也不改写文件。
+开放步骤外的提示词变化或生成标识冲突，会抛出 `SessionFormatUnsupportedMigrationError`，而非移动事件或虚构归属。源字段格式错误、缺失位置、无效引用、不一致切点、投递违规与矛盾工具结果，会在直接阶段或目标校验器中抛出格式错误。目录将迁移阶段和转换后目标校验失败报告为类型化的不支持迁移；物理解码失败仍按所选恢复策略归类为损坏。本迁移边不修复源或目标，不回退代次，也不改写文件。
 
 -----
 
@@ -155,7 +155,7 @@ V2 `session-log-deepseek/delivery-accepted` 若携带 `data.sessionFormatVersion
 <details>
 <summary>实现细节 — 点击展开</summary>
 
-[阶段](src/migration.ts)拥有每份产物独立的同步序列映射、消息身份集合和提示词/生命周期状态。紧凑事件段增量展开。[编解码器](src/codec.ts)复用冻结的 V2 分帧；[恢复器](src/validation.ts)先校验 V3 结构，再向冻结的普通关系校验提供私有 system/PTC/修复标识与端点视图。该视图为投递检查保留实际目标代次，且绝不对外返回：恢复返回原始 V3 产物与身份。冻结的 V0 到 V1 和 V1 到 V2 语义保持不变。本库不拥有可独立观察的注册或状态副本，因此不发布运行时不变量伴随入口。
+[阶段](src/migration.ts)拥有每份产物独立的同步序列映射、消息身份集合和提示词/生命周期状态。紧凑事件段增量展开。[编解码器](src/codec.ts)复用冻结的 V2 分帧；[恢复器](src/validation.ts)先校验 V3 结构，再向冻结的普通关系校验提供私有 system/PTC/修复标识与端点视图。该视图为投递检查保留实际目标代次，并把已校验的首条系统消息序号传给关系折叠，使压缩区间采用相同的投影顺序。该视图绝不对外返回：恢复返回原始 V3 产物与身份。冻结的 V0 到 V1 和 V1 到 V2 语义保持不变。本库不拥有可独立观察的注册或状态副本，因此不发布运行时不变量伴随入口。
 
 [组合目录测试](tests/combined-migration.spec.ts)验证转换组合与原生重新打开；[迁移测试](tests/migration.spec.ts)和[规范测试](tests/canonical-envelopes.spec.ts)固定保留与拒绝规则。[持久化集成](../session-persistence-jsonl/tests/v2-ptc-migration.spec.ts)负责发布证据。[已发布格式决策](../../../.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.zh.md)负责将相邻组合测试与原生准入测试分开的依据。
 

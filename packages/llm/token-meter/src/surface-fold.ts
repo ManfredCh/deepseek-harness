@@ -14,8 +14,8 @@
  * @module @deepseek-ai/dsh-token-meter/surface-fold
  */
 
-import { deriveEventMessage } from '@deepseek-ai/dsh-session'
-import type { SessionSeq, SurfaceEvent } from '@deepseek-ai/dsh-session'
+import { deriveEventMessage, foldSurface, isSurfaceEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionSeq, SurfaceEvent } from '@deepseek-ai/dsh-session'
 import type { ContentBlock, ImageBlock, Message } from '@deepseek-ai/dsh-llm'
 import { estimateMessage, estimateStructuralBlock } from './estimate.ts'
 
@@ -25,6 +25,8 @@ type FileAttachmentRef = Extract<ContentBlock, { type: 'file' }>['attachment']
 export interface MeterSurfaceNode {
   /** Durable sequence number of the surface event. */
   readonly seq: SessionSeq
+  /** Whether this position holds a system event, including an empty prompt. */
+  readonly system: boolean
   /** Fixed-heuristic price of the node's exact message. */
   readonly heuristicTokens: number
   /** Structural JSON price replaced when the routed request projects images. */
@@ -45,8 +47,8 @@ export interface SurfaceTokenPlan<Node = MeterSurfaceNode> {
   readonly deltaTokens: number
   /** The priced node the commit inserts for this event. */
   readonly node: Node
-  /** Commit position: `append`, or the inclusive replaced index range. */
-  readonly target: 'append' | { readonly startIdx: number; readonly endIdx: number }
+  /** Commit position: a new tail, the first system head, or an inclusive replacement range. */
+  readonly target: 'append' | 'prepend' | { readonly startIdx: number; readonly endIdx: number }
 }
 
 /** Collect projected attachment occurrences and their structural prices. */
@@ -74,10 +76,11 @@ function collectProjectedAttachments(
 }
 
 /** Build one priced node from a surface event's derived message. */
-function analyzeNode(seq: SessionSeq, message: Message | null): MeterSurfaceNode {
+function analyzeNode(seq: SessionSeq, message: Message | null, system: boolean): MeterSurfaceNode {
   if (message === null) {
     return {
       seq,
+      system,
       heuristicTokens: 0,
       imageStructuralTokens: 0,
       fileStructuralTokens: 0,
@@ -91,12 +94,23 @@ function analyzeNode(seq: SessionSeq, message: Message | null): MeterSurfaceNode
   const structural = collectProjectedAttachments(message.content, images, files)
   return {
     seq,
+    system,
     heuristicTokens,
     imageStructuralTokens: structural.imageTokens,
     fileStructuralTokens: structural.fileTokens,
     images,
     files,
   }
+}
+
+/** Reprice the canonical checkout surface from original events, without storing a second history. */
+export function checkoutSurfaceTokens(events: readonly SessionEvent[] | undefined): MeterSurfaceNode[] {
+  if (events === undefined || events[0]?.seq !== 0) throw new Error('token checkout requires the complete event prefix')
+  return foldSurface(events).nodes.map(seq => {
+    const event = events[seq]
+    if (!event || !isSurfaceEvent(event)) throw new Error('token checkout references a missing surface event')
+    return analyzeNode(seq, deriveEventMessage(event), event.type === 'system/message')
+  })
 }
 
 /**
@@ -109,14 +123,15 @@ function analyzeNode(seq: SessionSeq, message: Message | null): MeterSurfaceNode
  *   corruption and must fail loud rather than skip the event.
  */
 export function planSurfaceTokens(
-  nodes: readonly Pick<MeterSurfaceNode, 'seq' | 'heuristicTokens'>[],
+  nodes: readonly Pick<MeterSurfaceNode, 'seq' | 'heuristicTokens' | 'system'>[],
   event: SurfaceEvent,
 ): SurfaceTokenPlan {
-  const node = analyzeNode(event.seq, deriveEventMessage(event))
+  const node = analyzeNode(event.seq, deriveEventMessage(event), event.type === 'system/message')
   const tokens = node.heuristicTokens
   const op = event.surfaceOp
   if (op === 'append') {
-    return { tokens, deltaTokens: tokens, node, target: 'append' }
+    const target = node.system && nodes[0]?.system !== true ? 'prepend' : 'append'
+    return { tokens, deltaTokens: tokens, node, target }
   }
   const startIdx = nodes.findIndex(candidate => candidate.seq === op.startSeq)
   const endIdx = nodes.findIndex(candidate => candidate.seq === op.endSeq)
@@ -138,6 +153,10 @@ export function planSurfaceTokens(
  * @param plan - the transition returned by {@link planSurfaceTokens}.
  */
 export function commitSurfaceTokens<Node>(nodes: Node[], plan: SurfaceTokenPlan<Node>): void {
+  if (plan.target === 'prepend') {
+    nodes.unshift(plan.node)
+    return
+  }
   if (plan.target === 'append') {
     nodes.push(plan.node)
     return

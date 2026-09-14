@@ -11,6 +11,9 @@
 import type { Message } from '@deepseek-ai/dsh-llm'
 import { SessionLogOffset, SessionSeq } from './types.ts'
 import { KNOWN_SESSION_EVENT_TYPES, MESSAGE_PROJECTION_EVENT_TYPES } from './known-event-types.ts'
+import { assertHistoryCheckoutEvent, assertStableHistoryBoundary } from './history.ts'
+export { assertHistoryCheckoutEvent, assertStableHistoryBoundary, selectActiveHistoryEvents } from './history.ts'
+export type { HistoryEvent } from './history.ts'
 import type {
   SessionEvent,
   SessionEventType,
@@ -157,6 +160,34 @@ export function deriveEventMessage(
   }
 }
 
+/** A checkout may end inside a raw turn only when its model-visible tool exchanges are complete. */
+export function assertCompleteSurfaceToolPairs(events: readonly SessionEvent[], nodes: readonly SessionSeq[]): void {
+  const pending = new Set<string>()
+  let balance = 0
+  for (const seq of nodes) {
+    const event = events[seq]
+    if (event === undefined) throw new Error('history checkout target references a missing surface event')
+    balance += surfaceToolPairingDelta(event)
+    if (balance < 0) throw new Error('history checkout target contains an unmatched tool result')
+    const message = deriveEventMessage(event)
+    for (const block of message?.content ?? []) {
+      if (block.type === 'tool-call') {
+        if (pending.has(block.id)) throw new Error('history checkout target repeats an unmatched tool call')
+        pending.add(block.id)
+      } else if (block.type === 'tool-result') {
+        if (!pending.delete(block.toolCallId)) throw new Error('history checkout target contains an unmatched tool result')
+      }
+    }
+  }
+  if (pending.size || balance !== 0) throw new Error('history checkout target ends with unmatched tool calls')
+}
+
+/** Shared pure tool-balance change used by current-surface cut validators. */
+export function surfaceToolPairingDelta(event: SessionEvent): number {
+  if (event.type === 'assistant/message') return event.data.message.content.filter(block => block.type === 'tool-call').length
+  return event.type === 'tool/result' ? -1 : 0
+}
+
 /** Whether a payload field is a JSON object rather than an array or scalar. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -224,7 +255,7 @@ export interface SurfaceFoldResult {
 export interface SessionSurface {
   /** Current surface event sequences in model-visible order. */
   readonly nodes: readonly SessionSeq[]
-  /** Monotonic count of committed positional replacements. */
+  /** Monotonic generation of positional rewrites, including checkout and a late system head. */
   readonly replaceGeneration: number
   /** Monotonic count of committed replacements and plugin-owned message changes. */
   readonly contentGeneration: number
@@ -248,7 +279,8 @@ interface SurfaceReplacePlan extends SurfaceFoldReplacement {
 
 /** One validated surface transition that has not mutated fold state yet. */
 type SurfacePlan =
-  | { kind: 'append'; seq: SessionSeq }
+  | { kind: 'append'; seq: SessionSeq; systemHead?: true }
+  | { kind: 'checkout'; nodes: readonly SessionSeq[] }
   | SurfaceReplacePlan
   | { kind: 'project'; projection: SessionMessageProjection; messages: ReadonlyMap<SessionSeq, Message> }
 
@@ -351,6 +383,7 @@ function assertSourceEventReferences(
  * @throws when metadata violates event-local eligibility, marker, or source-sequence rules.
  */
 export function validateSurfaceMetadata(event: SessionEvent): SurfaceOp | undefined {
+  assertHistoryCheckoutEvent(event)
   const op = surfaceOpOf(event)
   if (op !== undefined && op !== 'append'
     && (op.startSeq >= event.seq || op.endSeq >= event.seq)) {
@@ -465,6 +498,7 @@ function planSurfaceEvent(
   events: readonly SessionEvent[],
   baseSeq: SessionLogOffset,
   projections: readonly SessionMessageProjection[],
+  checkoutSurface?: (throughSeq: number) => readonly SessionSeq[],
 ): SurfacePlan | undefined {
   if (event.seq !== expectedSeq) {
     throw new Error(`session event seq ${event.seq} is not contiguous; expected ${expectedSeq}`)
@@ -479,9 +513,21 @@ function planSurfaceEvent(
   if (MESSAGE_PROJECTION_EVENT_TYPES.has(event.type)) {
     throw new Error(`session event "${event.type}" requires a message projection; load its owning plugin or supply its projection definition`)
   }
+  if (event.type === 'session/history-checkout') {
+    assertHistoryCheckoutEvent(event)
+    if (baseSeq !== 0) throw new Error('history checkout surface requires the complete log')
+    assertStableHistoryBoundary(events, event.seq === 0 ? -1 : SessionSeq(event.seq - 1))
+    const nodes = checkoutSurface?.(event.data.throughSeq)
+      ?? foldSurface(events.slice(0, event.data.throughSeq + 1), projections).nodes
+    assertCompleteSurfaceToolPairs(events, nodes)
+    return { kind: 'checkout', nodes }
+  }
   if (surfaceOp === undefined) return
   if (surfaceOp === 'append') {
-    return { kind: 'append', seq: event.seq }
+    const head = state.nodes[0]
+    const firstSystem = event.type === 'system/message'
+      && (head === undefined || events[head - baseSeq]?.type !== 'system/message')
+    return { kind: 'append', seq: event.seq, ...(firstSystem ? { systemHead: true as const } : {}) }
   }
   const range = replacementRange(state, surfaceOp)
   assertSourceEventReferences(event, range.shadowedSeqs)
@@ -504,8 +550,9 @@ function applySurfaceEvent(
   events: readonly SessionEvent[],
   baseSeq: SessionLogOffset,
   projections: readonly SessionMessageProjection[],
+  checkoutSurface?: (throughSeq: number) => readonly SessionSeq[],
 ): SurfaceFoldReplacement | undefined {
-  const plan = planSurfaceEvent(state, event, expectedSeq, events, baseSeq, projections)
+  const plan = planSurfaceEvent(state, event, expectedSeq, events, baseSeq, projections, checkoutSurface)
   return applySurfacePlan(state, plan)
 }
 
@@ -515,7 +562,14 @@ function applySurfacePlan(
   plan: SurfacePlan | undefined,
 ): SurfaceFoldReplacement | undefined {
   if (plan?.kind === 'append') {
-    state.nodes.push(plan.seq)
+    // A Session may already contain a queued user surface before its first
+    // real model step. Reserve the system projection head when it arrives;
+    // append-origin human history and durable seq/time stay unchanged.
+    if (plan.systemHead) {
+      if (state.nodes.length > 0) state.replaceGeneration += 1
+      state.nodes.unshift(plan.seq)
+    }
+    else state.nodes.push(plan.seq)
   } else if (plan?.kind === 'replace') {
     state.nodes.splice(plan.startIdx, plan.endIdx - plan.startIdx + 1, plan.seq)
     state.replaceGeneration += 1
@@ -523,6 +577,10 @@ function applySurfacePlan(
   } else if (plan?.kind === 'project') {
     for (const [seq, message] of plan.messages) state.projectedMessages.set(seq, message)
     state.projections.add(plan.projection)
+    state.contentGeneration += 1
+  } else if (plan?.kind === 'checkout') {
+    state.nodes = [...plan.nodes]
+    state.replaceGeneration += 1
     state.contentGeneration += 1
   }
   if (plan?.kind !== 'replace') return
@@ -544,6 +602,8 @@ function applySurfacePlan(
 export function foldSurface(events: readonly SessionEvent[], projections: readonly SessionMessageProjection[] = []): SurfaceFoldResult {
   const state = createFoldState()
   const replacements: SurfaceFoldReplacement[] = []
+  const targets = new Set(events.filter(event => event.type === 'session/history-checkout').map(event => event.data.throughSeq))
+  const snapshots = new Map<number, readonly SessionSeq[]>([[-1, []]])
   for (const [index, event] of events.entries()) {
     const replacement = applySurfaceEvent(
       state,
@@ -552,8 +612,14 @@ export function foldSurface(events: readonly SessionEvent[], projections: readon
       events,
       SessionLogOffset(0),
       projections,
+      target => {
+        const snapshot = snapshots.get(target)
+        if (snapshot === undefined) throw new Error('history checkout surface target was not folded')
+        return snapshot
+      },
     )
     if (replacement !== undefined) replacements.push(replacement)
+    if (targets.has(event.seq)) snapshots.set(event.seq, [...state.nodes])
   }
   return { nodes: [...state.nodes], replacements, projectedMessages: new Map(state.projectedMessages) }
 }
@@ -595,7 +661,7 @@ export class SurfaceManager implements SessionSurface {
     }
   }
 
-  /** Monotonic count of folded positional replacements. */
+  /** Monotonic generation of folded positional rewrites. */
   get replaceGeneration(): number {
     this._assertProjections()
     if (this._lastProcessedSeq < this.baseSeq + this.log.length - 1) this._processDelta()

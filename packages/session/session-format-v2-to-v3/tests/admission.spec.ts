@@ -62,8 +62,31 @@ describe('durable V3 admission failures', () => {
     expect(() => releasedV3SessionFormatCodec.encodeEvent(event('system/message', { ...system, step }, { surfaceOp: 'append' }))).toThrow()
   })
 
-  it('refuses appending system context after a history with no protected head', () => {
-    expect(() => native([...opening, event('user/message', user, { surfaceOp: 'append' }), event('system/message', system, { surfaceOp: 'append' })])).toThrow(/protected first/)
+  it('admits the first system head at a real step after queued user history', () => {
+    expect(() => native([...opening, event('user/message', user, { surfaceOp: 'append' }), event('system/message', system, { surfaceOp: 'append' })])).not.toThrow()
+  })
+
+  it.each([false, true])('validates exact compaction spans after a late first system, later systems=%s', (laterSystems) => {
+    const rows = [event('turn/start', { turn: 1 }), event('user/message', user, { surfaceOp: 'append' }), event('step/start', { turn: 1, step: 1 }), event('system/message', system, { surfaceOp: 'append' }), event('user/message', { ...user, id: 'second' }, { surfaceOp: 'append' })]
+    if (laterSystems) rows.push(event('system/message', { ...system, message: { ...system.message, id: 'later' } }, { surfaceOp: 'append' }), event('system/message', { ...system, message: { ...system.message, id: 'empty', content: [] } }, { surfaceOp: 'append' }))
+    rows.push(event('step/end', { turn: 1, step: 1 }), event('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    const start = rows.length
+    rows.push(event('compaction/start', { compactionId: 'late-head', turn: null }))
+    const summary = { compactionId: 'late-head', summary: [{ type: 'text', text: 'summary' }], shadowedRange: { start: 1, end: 4 }, shadowedSeqs: [1, 4], shadowedTokenCount: 20, provider: 'mock', model: 'mock' }
+    rows.push(event('compaction/summary', summary))
+    rows.push(event('user/message', { ...user, id: 'checkpoint', source: { kind: 'plugin', plugin: 'compact', compactionId: 'late-head' } }, { surfaceOp: { op: 'replace', startSeq: 1, endSeq: 4 }, sourceEventSeqs: [start, start + 1, 1, 4] }))
+    rows.push(event('compaction/end', { compactionId: 'late-head', turn: null }))
+    const before = JSON.stringify(rows)
+    expect(native(rows).events).toEqual(rows.map((row, seq) => ({ ...row, seq })))
+    expect(JSON.stringify(rows)).toBe(before)
+    for (const shadowedSeqs of [[1], [4, 1], [1, 3, 4]]) {
+      const invalid = [...rows]
+      invalid[start + 1] = event('compaction/summary', { ...summary, shadowedSeqs })
+      expect(() => native(invalid)).toThrow(/exact current surface span|protected system head/)
+    }
+    const invalidSource = [...rows]
+    invalidSource[start + 2] = { ...rows[start + 2]!, sourceEventSeqs: [start, start + 1, 1] }
+    expect(() => native(invalidSource)).toThrow(/omit a shadowed surface node/)
   })
 
   it('rejects ordinary replacements that consume the protected head', () => {

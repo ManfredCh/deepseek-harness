@@ -942,6 +942,17 @@ describe('system/message surface node', () => {
     ])).toThrow(/node 0 holds the system prompt/)
   })
 
+  it('protects a late first system in projection while keeping append-origin chronology', () => {
+    const original = [userEvent(0), userEvent(1), systemEvent(2, 'first')]
+    const before = JSON.stringify(original)
+    expect(foldSurface(original).nodes).toEqual(sourceSeqs(2, 0, 1))
+    expect(JSON.stringify(original)).toBe(before)
+    expect(original.filter(isAppendSurfaceEvent).map(event => event.seq)).toEqual(sourceSeqs(0, 1, 2))
+    expect(foldSurface([...original, systemEvent(3, 'updated', { op: 'replace', startSeq: 2, endSeq: 2 }, [2])]).nodes).toEqual(sourceSeqs(3, 0, 1))
+    expect(() => foldSurface([...original, userEvent(3, { op: 'replace', startSeq: 2, endSeq: 2 }, [2])])).toThrow(/node 0 holds the system prompt/)
+    expect(() => foldSurface([...original, systemEvent(3, 'overbroad', { op: 'replace', startSeq: 2, endSeq: 1 }, [2, 0, 1])])).toThrow(/node 0 holds the system prompt/)
+  })
+
   it('leaves later system nodes and a non-system head unprotected', () => {
     const later = foldSurface([
       systemEvent(0, 'v1'), userEvent(1), systemEvent(2, 'v2'), userEvent(3),

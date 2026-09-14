@@ -66,9 +66,10 @@ export interface ProjectionDefinition<
    * unchanged reference (`Object.is`) produces zero downstream work.
    * @param state - the state covering all prior events.
    * @param event - the next committed session event.
+   * @param checkoutHistory - complete immutable prefix through a history-checkout event; omitted for ordinary events.
    * @returns the next state (same reference when the event is not the unit's).
    */
-  apply(state: NoInfer<S>, event: SessionEvent): NoInfer<S>
+  apply(state: NoInfer<S>, event: SessionEvent, checkoutHistory?: readonly SessionEvent[]): NoInfer<S>
   /** Client view. Omit for host-only units. */
   wire?: K extends keyof SessionProjectionMap ? {
     /** Validates the wire payload before it leaves the host. */
@@ -141,7 +142,7 @@ interface ErasedDefinition {
   key: string
   stateSchema: { parse(value: unknown): unknown }
   init(header: SessionHeader, inheritedEventCount: SessionLogOffset): unknown
-  apply(state: unknown, event: SessionEvent): unknown
+  apply(state: unknown, event: SessionEvent, checkoutHistory?: readonly SessionEvent[]): unknown
   wire: { viewSchema: { parse(value: unknown): unknown }; view(state: unknown): unknown } | undefined
   stateVersion: number
 }
@@ -261,7 +262,7 @@ export class SessionProjectionRegistry extends Service {
       key: definition.key,
       stateSchema: definition.stateSchema,
       init: (header, inheritedEventCount) => definition.init(header, inheritedEventCount),
-      apply: (state, event) => definition.apply(state as S, event),
+      apply: (state, event, history) => definition.apply(state as S, event, history),
       wire: wire === undefined
         ? undefined
         : { viewSchema: wire.viewSchema, view: state => wire.view(state as S) },
@@ -528,7 +529,7 @@ export class SessionProjectionRegistry extends Service {
         if (event === undefined || event.seq !== expectedSeq) {
           throw new Error(`session projection ${JSON.stringify(def.key)} cannot restore across missing seq ${String(expectedSeq)}`)
         }
-        state = def.apply(state, event)
+        state = def.apply(state, event, checkoutPrefix(events, event))
       }
       if (def.wire !== undefined) values[def.key] = def.wire.viewSchema.parse(def.wire.view(state))
       refreshed[def.key] = { ver: def.stateVersion, seq: endSeq, val: state }
@@ -607,7 +608,7 @@ export class SessionProjectionRegistry extends Service {
     events: readonly SessionEvent[],
   ): UnitCell {
     let state = def.init(header, inheritedEventCount)
-    for (const event of events) state = def.apply(state, event)
+    for (const event of events) state = def.apply(state, event, checkoutPrefix(events, event))
     return { state, observedSeq: (events.at(-1)?.seq ?? -1), views: [undefined, undefined] }
   }
 
@@ -643,7 +644,7 @@ export class SessionProjectionRegistry extends Service {
       if (event === undefined || event.seq !== seq) {
         throw new Error(`session projection ${JSON.stringify(def.key)} cannot advance across missing seq ${String(seq)}`)
       }
-      const next = def.apply(cell.state, event)
+      const next = def.apply(cell.state, event, event.type === 'session/history-checkout' ? session.snapshotEvents(SessionLogOffset(0), SessionLogOffset(event.seq + 1)) : undefined)
       if (!Object.is(next, cell.state)) {
         cell.views[0] = cell.views[1]
         cell.views[1] = undefined
@@ -678,7 +679,7 @@ export class SessionProjectionRegistry extends Service {
         )
       }
       const previousState = cell.state
-      const next = registration.def.apply(previousState, event)
+      const next = registration.def.apply(previousState, event, event.type === 'session/history-checkout' ? session.snapshotEvents(SessionLogOffset(0), SessionLogOffset(event.seq + 1)) : undefined)
       const changed = !Object.is(next, previousState)
       cell.state = next
       cell.observedSeq = event.seq
@@ -709,6 +710,13 @@ export class SessionProjectionRegistry extends Service {
     if (wire === undefined) throw new Error(`session projection ${JSON.stringify(registration.def.key)} has no wire view`)
     return wire.viewSchema.parse(wire.view(cell.state))
   }
+}
+
+/** Checkout-aware units need the original referenced prefix, never a detached tail checkpoint alone. */
+function checkoutPrefix(events: readonly SessionEvent[], event: SessionEvent): readonly SessionEvent[] | undefined {
+  if (event.type !== 'session/history-checkout') return
+  if (events[0]?.seq !== 0) throw new Error('history checkout projection requires a complete prefix; re-read from seq 0')
+  return events.slice(0, event.seq + 1)
 }
 
 export default SessionProjectionRegistry
