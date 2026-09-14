@@ -245,7 +245,7 @@ describe('built-in conversation node Definitions', () => {
     expect(systemMessageDefinition(inspectSystemPrompt).update({ state } as never, invalidStart)).toBe(state)
   })
 
-  it('keeps ordinary command-only history inactive for the Conversation shell', () => {
+  it('treats ordinary command-only history as Conversation shell activity', () => {
     const value = assembler([
       at(1, 'command/run', {
         commandId: 'command-1',
@@ -255,12 +255,20 @@ describe('built-in conversation node Definitions', () => {
       at(2, 'command/done', {
         commandId: 'command-1',
         kind: 'success',
+        text: 'usage: help [command]',
       }),
     ])
     const current = snapshot(value)
 
     expect(current.order).toHaveLength(1)
     expect(current.nodes.get(current.order[0] ?? '')?.kind).toBe('command')
+    expect(chatViewDefinition.isActive?.(current)).toBe(true)
+  })
+
+  it('keeps a Session without any assembled Node inactive for the Conversation shell', () => {
+    const current = snapshot(assembler())
+
+    expect(current.order).toHaveLength(0)
     expect(chatViewDefinition.isActive?.(current)).toBe(false)
   })
 
