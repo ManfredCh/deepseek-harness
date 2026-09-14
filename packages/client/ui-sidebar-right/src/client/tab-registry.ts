@@ -85,6 +85,10 @@ export interface SidebarRightGuideBox extends SidebarRightGuideEntry {
 
 /** One registered tab type: its static face, and nothing else. */
 export interface SidebarRightTabDefinition {
+  /** 此页面在每个会话中自动打开并固定在首位。 */
+  readonly pinned?: boolean
+  /** 切换标签时保留正文。 */
+  readonly keepMounted?: boolean
   /**
    * This implementation's identity in the tab system, unique across every
    * registration (a package name is the natural value). A kind is not unique —

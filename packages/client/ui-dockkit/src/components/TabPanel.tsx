@@ -295,7 +295,7 @@ export function TabPanel({ state, pane, callbacks }: TabPanelProps): ReactNode {
                   onPointerDown={(event) => {
                     // A secondary press is the menu, never a drag.
                     if (event.button === 2) return
-                    callbacks.onTabPressed(tabId, event)
+                    !tab.pinned && callbacks.onTabPressed(tabId, event)
                   }}
                   onClick={(event) => {
                     event.stopPropagation()
@@ -407,9 +407,12 @@ export function TabPanel({ state, pane, callbacks }: TabPanelProps): ReactNode {
         )}
       </div>
       <div className={css.paneBody}>
-        {active === undefined
-          ? <p className={css.empty}>{callbacks.labels.emptyPane}</p>
-          : callbacks.renderTab(active)}
+        {active === undefined && <p className={css.empty}>{callbacks.labels.emptyPane}</p>}
+        {pane.tabs.map(id=>getTab(state,id)).filter(tab=>tab.keepMounted||tab.id===pane.activeTabId).map(tab=>
+          <div key={tab.id} data-dockkit-tab-body={tab.id} hidden={tab.id!==pane.activeTabId}
+            style={{display:tab.id===pane.activeTabId?'flex':'none',flexDirection:'column',height:'100%',minHeight:0,minWidth:0}}>
+            {callbacks.renderTab(tab)}
+          </div>)}
         {zone !== undefined && (
           <>
             <div className={css.dockScrim} data-dockkit-dock-scrim />
