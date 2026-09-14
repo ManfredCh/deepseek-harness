@@ -45,6 +45,10 @@ export interface ReconnectConfig {
   maxAttempts?: number
 }
 
+import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { scopeTarget } from '@deepseek-ai/dsh-scope'
+import type { OAuthClientProvider } from './oauth.ts'
+
 /** Defaults shared by the Config schema and {@link resolveReconnectPolicy}. */
 export const RECONNECT_DEFAULTS: Required<ReconnectConfig> = Object.freeze({
   enabled: true,
@@ -144,6 +148,10 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     : opts
 
   let disposed = false
+  let paused = false
+  let awaitingAuthorization = false
+  let authProvider: OAuthClientProvider | undefined
+  let authProviderResolved = false
   /** Current generation: the connecting or connected client; undefined during backoff waits and after final failure. */
   let client: Client | undefined
   /** Close signal paired with {@link client}; captured by dispose before current ownership is cleared. */
@@ -222,6 +230,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   }
 
   function scheduleReconnect(): void {
+    if (paused || awaitingAuthorization || disposed) return
     const lostEstablishedConnection = connectedAt !== undefined
     if (!policy.enabled) {
       const message = lostEstablishedConnection
@@ -301,7 +310,17 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       },
     )
     try {
-      await generation.connect(createTransport(config))
+      if (config.transport !== 'stdio' && config.oauth && !authProviderResolved) {
+        const oauthConfig = config.oauth === true ? {} : config.oauth
+        authProvider = await ctx.waterfall(scopeTarget({}, scopeOf(ctx)), 'mcp/oauth-provider', {
+          owner: ctx, serverName: config.serverName, serverUrl: config.url, config: oauthConfig,
+          authorize: (provider, code) => auth(provider, { serverUrl: config.url, ...(code !== undefined ? { authorizationCode: code } : {}), ...(oauthConfig.scope ? { scope: oauthConfig.scope } : {}) }),
+          control: controlAuthorization,
+        }, () => Promise.resolve(undefined))
+        if (!authProvider) throw new Error('MCP_OAUTH_PROVIDER_UNAVAILABLE: install the product OAuth credential adapter')
+        authProviderResolved = true
+      }
+      await generation.connect(createTransport(config, authProvider?.forTransport?.() ?? authProvider))
       if (hasClosed()) {
         attemptSettled = true
         generationDown(generation)
@@ -309,6 +328,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       }
       await enqueueSync(generation, startup ? startupOpts : opts)
     } catch (error) {
+      if (authProvider && error instanceof UnauthorizedError) awaitingAuthorization = true
       if (firstAttemptError === undefined) firstAttemptError = error
       // Disposal clears current ownership before it closes the generation, so
       // only a live supervisor reports an attempt failure.
@@ -333,11 +353,36 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     }
     if (!isCurrent(generation)) return
     connectedAt = Date.now()
+    awaitingAuthorization = false
     if (failedAttempts > 0) ctx.logger.info(`${label}: reconnected and re-synced tools (attempt ${failedAttempts}/${policy.maxAttempts})`)
   }
 
   /** The in-flight (or last settled) connection attempt; dispose awaits it for quiescence. */
   let settling = connectGeneration(true)
+  let authControl: Promise<void> = Promise.resolve()
+  /** Pause/restart this same supervisor after credential changes; never create a competing client owner. */
+  function controlAuthorization(action: 'pause' | 'reconnect'): Promise<void> {
+    const next = authControl.catch(() => {}).then(async () => {
+      if (disposed) throw new Error('MCP_PROVIDER_UNAVAILABLE: ' + config.serverName)
+      paused = true
+      if (reconnectTimer !== undefined) { clearTimeout(reconnectTimer); reconnectTimer = undefined }
+      await settling
+      const current = client, closed = clientClosed
+      client = undefined; clientClosed = undefined; connectedAt = undefined
+      if (current) { await current.close(); if (closed && !await waitForClose(closed)) throw new Error('MCP_CONNECTION_CLOSE_TIMEOUT') }
+      await syncChain
+      for (const dispose of disposers.values()) dispose()
+      disposers = new Map()
+      if (action === 'reconnect') {
+        paused = false; awaitingAuthorization = false; failedAttempts = 0
+        settling = connectGeneration(false)
+        await settling
+        if (!client) throw new Error('MCP_AUTH_RECONNECT_FAILED: ' + config.serverName)
+      }
+    })
+    authControl = next
+    return next
+  }
 
   // The ready promise settles when the first attempt finishes (regardless of
   // success). If the first attempt fails and reconnect is enabled, the
@@ -349,7 +394,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     // Note: settling.then() is a microtask; stdio onclose is a macrotask — so
     // a server that crashes AFTER a successful initial sync cannot flip client
     // to undefined before this continuation runs.
-    if (client !== undefined) return {}
+    if (client !== undefined || awaitingAuthorization) return {}
     /* v8 ignore next -- defensive: firstAttemptError is always set when connect/sync fails */
     return { error: firstAttemptError ?? new Error(`${label}: initial connection failed`) }
   })
