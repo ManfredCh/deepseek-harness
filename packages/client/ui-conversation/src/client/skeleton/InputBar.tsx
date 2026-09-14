@@ -188,6 +188,13 @@ export const InputBar = memo(function InputBar({
     editor.getRootElement()?.focus({ preventScroll: true })
     editor.focus(() => { revealSelection() })
   }, [locked, sessionId, editor])
+  useEffect(() => {
+    if (locked || editor === null) return
+    return installInputFocusShortcut(() => {
+      editor.getRootElement()?.focus({ preventScroll: true })
+      editor.focus(() => { revealSelection() })
+    })
+  }, [locked, sessionId, editor])
 
   // A persisted draft arrives AFTER the unlock effect: ConversationSession
   // adopts it in its own mount effect, and a parent's mount effect runs after
@@ -572,3 +579,4 @@ export const InputBar = memo(function InputBar({
     </div>
   )
 })
+import { installInputFocusShortcut } from './input-focus-shortcut.ts'
