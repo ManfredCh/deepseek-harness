@@ -5,11 +5,16 @@
  * reads each entry's `label` option for aria text.
  */
 import { IconSettingsOutline14, IconSettingsOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './chrome.module.css'
+import { installSettingsOpenShortcut } from './settings-open-shortcut.ts'
 
 /** Trigger content props: the sidebar column state + the standard locale seat. */
-export type TriggerContentProps = PropsRuntime<'settings.trigger'> & PropsLocale<'settings'>
+export type TriggerContentProps = PropsRuntime<'settings.trigger'> & PropsLocale<'settings'> & {
+  /** Optional shell-owned action, so existing slot hosts remain compatible. */
+  openSettings?: () => void
+}
 
 /** Header content props: the standard locale seat only. */
 export type HeaderContentProps = PropsRuntime<'settings.header'> & PropsLocale<'settings'>
@@ -19,7 +24,8 @@ export type HeaderContentProps = PropsRuntime<'settings.header'> & PropsLocale<'
  * @param props - composed slot props.
  * @returns the trigger content fragment.
  */
-export function TriggerContent({ wide, t }: TriggerContentProps) {
+export function TriggerContent({ wide, t, openSettings }: TriggerContentProps) {
+  useEffect(() => openSettings === undefined ? undefined : installSettingsOpenShortcut(openSettings), [openSettings])
   return (
     <>
       {wide ? <IconSettingsOutline16 size={16} /> : <IconSettingsOutline14 size={18} />}

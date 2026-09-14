@@ -135,6 +135,8 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
     setActiveId(id)
     setOpen(true)
   }, [])
+  // Extra owner action is optional to older trigger consumers; no new service or state.
+  const triggerControl = { wide, openSettings: () => { setOpen(true) } }
 
   // The ledger tick keeps the nav rows fresh: registrants re-register with
   // freshly localized text on locale change, and the trigger/header/close
@@ -220,7 +222,7 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
           aria-expanded={open}
           onClick={() => { setOpen(true) }}
         >
-          {renderSlot('settings.trigger', { wide })}
+          {renderSlot('settings.trigger', triggerControl)}
         </button>
         <ConnectionIndicator
           state={wide ? connectionIndicator : undefined}
