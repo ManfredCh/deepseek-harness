@@ -14,6 +14,7 @@ import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { TurnNavigator } from './TurnNavigator.tsx'
 import { mergeTurnRailItems, type TurnRailItem } from './turn-rail-items.ts'
 import { formatRunDuration } from './message-chrome.ts'
+import { installMessageNavigationShortcut, neighboringMessage } from './message-navigation-shortcut.ts'
 import css from './ChatView.module.css'
 
 const FOLLOW_THRESHOLD = 24
@@ -756,6 +757,21 @@ export function ChatView({
       ? null
       : { key: landed.dataset.chatAnchorKey, top: flowTop(landed, el) }
   }, [loadingOlder, loadThrough])
+
+  useEffect(() => installMessageNavigationShortcut(direction => {
+    const local = listRef.current
+    if (local === null) return
+    const scrollport = scrollerOf(local)
+    // These are this view's own typed node wrappers, not an external UI selector.
+    const rows = [...local.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"],[data-chat-flow-kind="steering"]')].filter(row => !row.hidden)
+    const index = neighboringMessage(rows.map(row => row.getBoundingClientRect().top), scrollport.getBoundingClientRect().top + 24, atBottomRef.current, direction)
+    if (index < 0) { if (hasMore && !loadingOlder) loadOlderAnchored(); return }
+    if (index >= rows.length) { toBottom(scrollport); return }
+    const row = rows[index]!, turn = Number(row.dataset.chatTurn)
+    pendingJumpRef.current = null
+    setBusyJumpTurn(null)
+    landOnRowRef.current(local, scrollport, row, turn)
+  }), [hasMore, loadingOlder, loadOlder, order])
 
   return (
     <div className={css.root}>
