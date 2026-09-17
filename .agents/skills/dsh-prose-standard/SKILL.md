@@ -9,6 +9,8 @@ Write enough to preserve the contract, then remove reasoning transcripts, repeti
 
 Treat `contract`, `boundary`, `shape`, `surface`, `seam`, `gate`, and `vocabulary` as terms to check before use, not banned words. First ask whether the exact rule, API, field set, type, validation, timing point, component split, or failure states the fact better. Keep a term when it names the exact technical subject, including caller/callee contracts and security/process boundaries.
 
+This skill owns prose that lands in the repository: Markdown, JSDoc, comments, prompts, descriptions, diagnostics, and product strings. Prose the model writes to the user in conversation is a different surface with a different reader, and the deployment persona owns it. Do not apply these coverage rules to a chat reply, and do not apply a conversational style rule to a repository artifact.
+
 Comments describe non-obvious contracts or rationale that code cannot express; they do not restate what code already implies.
 
 ## Inputs and exclusions
