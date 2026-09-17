@@ -1,6 +1,6 @@
 ---
 name: dsh-prose-standard
-description: Use when writing, reviewing, restoring, trimming, or auditing prose in the deepseek-harness repo, including deciding where documentation or comments are required across Markdown, JSDoc, code and test comments, prompts, descriptions, diagnostics, and CLI or UI strings.
+description: "Write, review, restore, trim, or audit prose in deepseek-harness, including where documentation or comments are required across Markdown, JSDoc, code and test comments, prompts, descriptions, diagnostics, and CLI or UI strings. Use when deciding what a prose location must cover or whether existing prose meets the standard."
 ---
 
 # DeepSeek Harness Prose Standard
@@ -8,6 +8,8 @@ description: Use when writing, reviewing, restoring, trimming, or auditing prose
 Write enough to preserve the contract, then remove reasoning transcripts, repetition, and decoration. A contract is an obligation, invariant, precondition, postcondition, or compatibility promise that a caller, callee, implementer, producer, or consumer relies on. This skill owns editorial judgment and required prose coverage; use [dsh-doc](../dsh-doc/SKILL.md) for placement, budgets, bilingual pairs, and documentation gates, and [dsh-trim-cot-leakage](../dsh-trim-cot-leakage/SKILL.md) for hunting and fixing reasoning-transcript leakage. It is guidance, not a script.
 
 Treat `contract`, `boundary`, `shape`, `surface`, `seam`, `gate`, and `vocabulary` as terms to check before use, not banned words. First ask whether the exact rule, API, field set, type, validation, timing point, component split, or failure states the fact better. Keep a term when it names the exact technical subject, including caller/callee contracts and security/process boundaries.
+
+This skill owns prose that lands in the repository: Markdown, JSDoc, comments, prompts, descriptions, diagnostics, and product strings. Prose the model writes to the user in conversation is a different surface with a different reader, and the deployment persona owns it. Do not apply these coverage rules to a chat reply, and do not apply a conversational style rule to a repository artifact.
 
 Comments describe non-obvious contracts or rationale that code cannot express; they do not restate what code already implies.
 

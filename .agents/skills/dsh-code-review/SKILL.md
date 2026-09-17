@@ -1,6 +1,6 @@
 ---
 name: dsh-code-review
-description: Use when reviewing a pull request in the deepseek-harness repo — orients the reviewer to this codebase's standards (AGENTS.md conventions, defensive patterns, ADRs, quality gates) and the review-specific checks that code alone can't show
+description: "Review a deepseek-harness pull request against this repository's standards: AGENTS.md conventions, defensive patterns, Agent Notes, and quality gates, plus the review checks that reading the code alone cannot show. Use when reviewing a PR or asked for a code review in this repository."
 ---
 
 # Reviewing a DeepSeek-Harness PR

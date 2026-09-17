@@ -1,6 +1,6 @@
 ---
 name: dsh-translate-docs
-description: Manually run the extended DeepSeek Harness bilingual-document workflow, including generated briefings, delegated prose translation, whole-document translation, and scoped pairing verification.
+description: "Manually run the extended DeepSeek Harness bilingual-document workflow: generated briefings, delegated prose translation, whole-document translation, and scoped pairing verification. Use when explicitly invoked for a bilingual documentation update or a new language pair."
 disable-model-invocation: true
 user-invocable: true
 ---
