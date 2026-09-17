@@ -235,7 +235,10 @@ export function apply(ctx: Context, config: Config): void {
     description: 'Update the exact current goal revision. edit, pause, and resume require a direct '
       + 'top-level human request. During an automatic continuation of the current goal, complete '
       + 'and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains '
-      + 'responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.',
+      + 'responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason. '
+      + 'Never use blocked merely because the work is hard, slow, uncertain, incomplete, or would benefit from '
+      + 'clarification. Do not mark a goal complete merely because its budget is nearly exhausted or because you are '
+      + 'stopping work.',
     parameters: {
       goal_id: { type: 'string', required: true, description: 'Exact id returned by get_goal.' },
       revision: { type: 'number', required: true, description: 'Exact positive revision returned by get_goal.' },
