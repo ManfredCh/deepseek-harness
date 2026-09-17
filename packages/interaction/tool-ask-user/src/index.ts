@@ -14,7 +14,11 @@ export const name = 'tool-ask-user'
 export const inject = ['tools', 'userQuestions']
 
 const description = 'Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. '
-  + 'Send one or more questions, each with a stable id that will be echoed in the answer.'
+  + 'Send one or more questions, each with a stable id that will be echoed in the answer. '
+  + 'Prefer multiple-choice questions, which cost the user less to answer, and never ask for files or screenshots: this tool carries text only. '
+  + 'The turn stops until an answer arrives, so put everything you need in one call rather than asking one question at a time. '
+  + 'Do not start work that depends on the answer while it is pending, and treat elapsed time as neither an answer nor an approval. '
+  + 'When the question is optional, state the assumption you will proceed with instead of waiting.'
 
 export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
