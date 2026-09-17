@@ -235,7 +235,15 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.systemPrompt.section({
     name: 'tool:bash',
     order: ctx.systemPrompt.getSectionOrder('TOOL_BASH'),
-    text: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on.',
+    text: [
+      'Check the [exit code: N] marker on every bash result; investigate failures before moving on.',
+      'Command text is code, not a string literal: backticks and `$()` still execute, and '
+      + '`JSON.stringify()` output is not shell escaping because it keeps literal `\\n` sequences.',
+      'Name temporary variables for their task rather than reusing `HOME`, `PATH`, or another '
+      + 'name the environment already defines.',
+      'Run one command per call instead of joining them with separators; the extra framing lines '
+      + 'bury the output the user has to read.',
+    ].join(' '),
   })
 
   ctx.tools.register(defineTool({
