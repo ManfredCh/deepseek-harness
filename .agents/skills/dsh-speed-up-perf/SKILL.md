@@ -1,6 +1,6 @@
 ---
 name: dsh-speed-up-perf
-description: 'Use when investigating or optimizing DeepSeek Harness performance, designing realistic synthetic benchmarks or CI performance gates, profiling long Sessions or Web responsiveness, or turning performance PR evidence into measured behavior-preserving fixes.'
+description: "Investigate and optimize DeepSeek Harness performance with measured, behavior-preserving fixes, including realistic synthetic benchmarks and CI performance gates. Use when profiling long Sessions or Web responsiveness, designing a benchmark or perf gate, or turning performance PR evidence into a bounded, reviewable change."
 ---
 
 # Speed Up DeepSeek Harness

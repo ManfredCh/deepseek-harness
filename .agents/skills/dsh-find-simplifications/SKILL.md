@@ -1,6 +1,6 @@
 ---
 name: dsh-find-simplifications
-description: 'Use when working in the deepseek-harness repo to find non-obvious simplification candidates, remove redundant comments or implementation-heavy documentation, write proposed Agent Notes or inline TODO/FIXME/XXX notes, audit or coalesce superseded Agent Notes, or fold worthwhile simplification ideas from another PR; especially for dead, duplicated, speculative, over-built, added-then-removed, or hand-rolled-where-a-dependency-exists surfaces.'
+description: "Find non-obvious simplification candidates in deepseek-harness: dead, duplicated, speculative, over-built, added-then-removed, or hand-rolled-where-a-dependency-exists code, plus redundant comments and implementation-heavy documentation. Use when asked to simplify or prune code, audit or coalesce superseded Agent Notes, or fold simplification ideas from another PR."
 ---
 
 # Finding DeepSeek Harness Simplifications
