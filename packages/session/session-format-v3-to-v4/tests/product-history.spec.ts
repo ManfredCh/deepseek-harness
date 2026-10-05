@@ -9,7 +9,6 @@ import { Session, SessionId, SessionLogOffset, type SessionEvent, type SessionHe
 import { assertProductHistoryEvent, remapProductHistoryReferences, restoreReleasedV3Artifact } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { RELEASED_V3_EVENT_TYPES } from '../src/index.ts'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import { generationLogPath } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
 
 const header = { type: 'session', version: 3, id: 'alpha4-product-fixture', createdAt: 1, isSeeded: false, delegationDepth: 0 }
 const image = { type: 'image', attachment: { attachmentId: 'fixture-image', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }
@@ -54,8 +53,8 @@ describe('Alpha4 product history migration into RC2 V4', () => {
     const root = await mkdtemp(join(tmpdir(), 'alpha4-product-history-'))
     const ctx = new Context(), id = SessionId(header.id)
     try {
-      const source = generationLogPath(root, undefined, id, 3, 'none')
-      const successor = generationLogPath(root, undefined, id, 4, 'none')
+      const source = join(root, '_no-cwd', header.id, 'session.v3.jsonl')
+      const successor = join(root, '_no-cwd', header.id, 'session.v4.jsonl')
       const bytes = Buffer.from([header, ...fixture()].map(value => JSON.stringify(value)).join('\n') + '\n')
       await mkdir(dirname(source), { recursive: true }); await writeFile(source, bytes)
       await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
@@ -78,7 +77,7 @@ describe('Alpha4 product history migration into RC2 V4', () => {
     const root = await mkdtemp(join(tmpdir(), 'alpha4-product-refusal-'))
     const ctx = new Context(), id = SessionId(header.id)
     try {
-      const source = generationLogPath(root, undefined, id, 3, 'none')
+      const source = join(root, '_no-cwd', header.id, 'session.v3.jsonl')
       const rows = [...fixture(), { type: 'lyapunov/not-listed', seq: 30, time: 31, data: {} }]
       const bytes = Buffer.from([header, ...rows].map(value => JSON.stringify(value)).join('\n') + '\n')
       await mkdir(dirname(source), { recursive: true }); await writeFile(source, bytes)
@@ -123,7 +122,9 @@ describe('Alpha4 product history migration into RC2 V4', () => {
     const unknown = [...fixture(), { ...row('worktree/not-listed', {}), seq: 30, time: 31 }] as SessionFormatEvent[]
     expect(() => restore(unknown)).toThrow(/unknown event type.*worktree\/not-listed/)
     const target = restore(fixture())
-    expect(() => restoreReleasedV3Artifact({ ...target, header: { ...target.header, version: 3 } }, new Set(RELEASED_V3_EVENT_TYPES))).toThrow()
+    expect(() => restoreReleasedV3Artifact(
+      { ...target, header: { ...target.header, version: 3 } }, new Set(RELEASED_V3_EVENT_TYPES),
+    )).toThrow()
   })
 
   it.each([
@@ -142,7 +143,9 @@ describe('Alpha4 product history migration into RC2 V4', () => {
 
   it('remaps -1 and null cursors without guessing missing earlier references', () => {
     const source = { type: 'worktree/history-operation', seq: 3, time: 1, ignorable: true, data: { version: 1, operationId: 'empty', action: 'undo', throughSeq: -1, restoreUserSeq: null, nextRedo: [{ throughSeq: -1, userSeq: 1, snapshot: null, paths: [] }], files: { mode: 'disabled', paths: [] } } } as SessionFormatEvent
-    expect(remapProductHistoryReferences(source, 4, [0, 2, 3]).data).toMatchObject({ throughSeq: -1, restoreUserSeq: null, nextRedo: [{ throughSeq: -1, userSeq: 2 }] })
+    expect(remapProductHistoryReferences(source, 4, [0, 2, 3]).data).toMatchObject({
+      throughSeq: -1, restoreUserSeq: null, nextRedo: [{ throughSeq: -1, userSeq: 2 }],
+    })
     expect(() => remapProductHistoryReferences(source, 4, [0])).toThrow(/missing from the source prefix/)
   })
 })
