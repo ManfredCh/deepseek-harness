@@ -44,6 +44,7 @@ import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 export * from './attribution.ts'
 export * from './brand.ts'
 export * from './error.ts'
+export * from './public-diagnostic.ts'
 export * from './api-key.ts'
 export * from './types.ts'
 export * from './content.ts'
@@ -79,6 +80,8 @@ declare module '@deepseek-ai/cordis' {
 
 /** Structured provider facts and cause accepted by {@link LlmError}. */
 export interface LlmErrorOptions extends ErrorOptions {
+  /** 已由wire decoder验证的公开诊断。 */
+  diagnostic?: LlmFailure['diagnostic']
   /** Valid HTTP status observed at the provider boundary. */
   status?: number
   /** Positive finite provider-requested delay in milliseconds. */
@@ -122,6 +125,7 @@ export class LlmError extends HarnessError {
     this.failure = Object.freeze({
       message,
       code,
+      ...options?.diagnostic === undefined ? {} : { diagnostic: options.diagnostic },
       ...options?.status === undefined ? {} : { status: options.status },
       ...options?.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: options.providerRetryAfterMs },
       ...options?.requestId === undefined ? {} : { requestId: options.requestId },

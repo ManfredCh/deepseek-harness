@@ -190,6 +190,7 @@ describe('bash tool through the agent loop', () => {
     ])
     const ctx = await harness(adapter)
     const agent = await ctx.agentLoop.create(SessionId('it-bg'), { provider: 'mock', model: 'mock' })
+    await agent.ctx.plugin(ToolJobs)
 
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run echo bg-ok in the background' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
@@ -197,6 +198,9 @@ describe('bash tool through the agent loop', () => {
     const firstResult = findEvent(events(agent), 'tool/result')
     expect(firstResult.data.message.isError).toBe(false)
     expect(resultText(firstResult)).toBe('started background job bash-1')
+    const running = ctx.jobs.list(agent.id)[0]
+    if (running === undefined) throw new Error('missing background job before settlement')
+    expect(running.registryId).toEqual(expect.any(String))
     // The turn closed with the task still running, so the notice cannot exist yet.
     const isNotice = (e: SessionEvent): e is SessionEvent<'user/message'> =>
       e.type === 'user/message' && e.data.source.kind !== 'user'
@@ -217,6 +221,7 @@ describe('bash tool through the agent loop', () => {
     // the terminal status, and the producer identity; the verbatim notice text
     // and its bounding are pinned in the tool-jobs unit tests.
     const notice = events(agent).find(isNotice)!
+    expect(events(agent).filter(isNotice)).toHaveLength(1)
     const noticeText = notice.data.content
       .filter(block => block.type === 'text').map(block => block.text).join('')
     expect(noticeText).toContain('background job bash-1 (bash: ')
@@ -224,6 +229,10 @@ describe('bash tool through the agent loop', () => {
     expect(notice.data.source).toMatchObject({
       kind: 'tool-jobs',
       form: 'notice',
+      job: {
+        id: running.id, registryId: running.registryId, startedAt: running.startedAt,
+        finishedAt: ctx.jobs.get(running.id, agent.id).finishedAt, status: 'completed',
+      },
     })
     const readResult = findEvent(events(agent), 'tool/result', 'last')
     expect(readResult.data.message.isError).toBe(false)

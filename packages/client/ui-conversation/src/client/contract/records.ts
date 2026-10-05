@@ -3,6 +3,7 @@
 // live readers rather than time-point views.
 
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
+import type { CommandDisplayMetadata } from '@deepseek-ai/dsh-commands/types'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
@@ -221,6 +222,9 @@ export interface UnknownSurfaceNode {
  */
 export interface CommandNode {
   kind: 'command'
+  display?: CommandDisplayMetadata
+  /** Derived public outcomes; durable command events are never removed. */
+  gestureHistory?: Array<{ commandId: CommandId; phase: CommandDisplayMetadata['phase']; sequence: number; name: string | null; outcome: CommandNode['outcome'] }>
   /** Seq of the command/run event; the done event's seq when only the done is in-window. */
   seq: number
   /** Unix epoch ms of the anchoring event. */

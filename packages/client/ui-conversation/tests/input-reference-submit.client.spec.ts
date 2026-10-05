@@ -33,6 +33,36 @@ function chip(shell: SessionInputShell): void {
 }
 
 describe('reference submission', () => {
+  it('publishes its own command effect after submitted text and attachments are consumed', async () => {
+    let settled = false
+    const released: readonly DraftAttachmentId[][] = []
+    const shell = new SessionInputShell({
+      actx: {} as Context, defaultSink: vi.fn(),
+      commandAttachments: { ...commandAttachments, release: (ids) => { (released as DraftAttachmentId[][]).push([...ids]) } },
+      commandSettled: async (token, outcome, signal) => {
+        expect(token).toBe('/control')
+        expect(outcome.text).toBe('opaque-result')
+        expect(signal.aborted).toBe(false)
+        expect(shell.snapshot.draft).toBe('')
+        expect(shell.snapshot.attachmentIds).toEqual([])
+        shell.setDraft('restored text')
+        expect(shell.addAttachments(['restored-file' as DraftAttachmentId])).toBe(true)
+        settled = true
+      },
+    })
+    shell.setDraft('/control')
+    shell.addAttachments(['submitted-file' as DraftAttachmentId])
+    expect(shell.beginCommand(
+      { name: 'control', token: '/control', attachments: true, submit: async () => ({ kind: 'success', text: 'opaque-result' }) },
+      { start: 0, end: 8, draftRev: shell.snapshot.draftRev },
+    )).toBe(true)
+    shell.submit()
+    await vi.waitFor(() => expect(settled).toBe(true))
+    expect(shell.snapshot.draft).toBe('restored text')
+    expect(shell.snapshot.attachmentIds).toEqual(['restored-file'])
+    expect(released).toEqual([['submitted-file']])
+    shell.dispose()
+  })
   it('mirrors canonical reference text so a persisted draft remains resolvable after remount', async () => {
     const mirror = vi.fn()
     const first = new SessionInputShell({
@@ -99,13 +129,9 @@ describe('reference submission', () => {
     })
 
     shell.submit('queue')
-    // Optimistic commit: the composer clears at enter and stays unlocked
-    // while the detached flight runs.
-    expect(shell.snapshot.phase).toBe('plain')
-    expect(shell.snapshot.draft).toBe('')
-    await vi.waitFor(() => {
-      expect(shell.snapshot.draft).toBe(`${mention} `)
-    })
+    expect(shell.snapshot.phase).toBe('submitting')
+    expect(shell.snapshot.draft).toBe(`${mention} `)
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
     expect(sink).toHaveBeenNthCalledWith(1, mention, [], 'queue', expect.any(AbortSignal))
     expect(shell.snapshot).toMatchObject({
       draft: `${mention} `,
@@ -117,8 +143,10 @@ describe('reference submission', () => {
     })
 
     shell.submit('queue')
-    expect(shell.snapshot.draft).toBe('')
+    expect(shell.snapshot.draft).toBe(`${mention} `)
     await vi.waitFor(() => {
+      expect(shell.snapshot.phase).toBe('plain')
+      expect(shell.snapshot.draft).toBe('')
       expect(sink).toHaveBeenNthCalledWith(2, mention, [], 'queue', expect.any(AbortSignal))
     })
     expect(shell.snapshot.occurrences).toEqual([])
@@ -140,10 +168,9 @@ describe('reference submission', () => {
     })
     chip(shell)
     shell.submit()
-    // The serializer rejection restores the optimistic commit with its chip.
-    await vi.waitFor(() => {
-      expect(shell.snapshot.draft).toBe(`${mention} `)
-    })
+    // Serialization rejection retains the native chip without an optimistic clear.
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.draft).toBe(`${mention} `)
     expect(sink).not.toHaveBeenCalled()
     expect(shell.snapshot.occurrences).toHaveLength(1)
     expect(shell.notices.getSnapshot()).toMatchObject({
@@ -168,9 +195,8 @@ describe('reference submission', () => {
     shell.dispose()
     expect(signal?.aborted).toBe(true)
     expect(shell.snapshot.phase).toBe('plain')
-    // The optimistic commit stands: disposal drops the settlement, so the
-    // sent draft is not restored into the dying composer.
-    expect(shell.snapshot.draft).toBe('')
+    // Disposal aborts the pending admission without consuming the unaccepted draft.
+    expect(shell.snapshot.draft).toBe('send this')
   })
 
   it('retains a rejected default message without duplicating its prompt error notice', async () => {
@@ -188,23 +214,40 @@ describe('reference submission', () => {
     expect(shell.notices.getSnapshot()).toBeNull()
   })
 
-  it('restores concurrent failed messages in submission order', async () => {
+  it('retains the native draft until ACK and blocks duplicate admission', async () => {
     const settlements: Array<(outcome: SubmitOutcome) => void> = []
-    const shell = new SessionInputShell({
-      actx: {} as Context,
-      defaultSink: () => new Promise<SubmitOutcome>((resolve) => { settlements.push(resolve) }),
-      commandAttachments,
-    })
-    shell.setDraft('first')
-    shell.submit()
-    shell.setDraft('second')
-    shell.submit()
-    expect(shell.snapshot.draft).toBe('')
+    const sink = vi.fn(() => new Promise<SubmitOutcome>((resolve) => { settlements.push(resolve) }))
+    const shell = new SessionInputShell({ actx: {} as Context, defaultSink: sink, commandAttachments })
+    shell.setDraft('下载一个宇树机器人g1放到场景中心地面上')
+    shell.addAttachments(['native-robot-file' as DraftAttachmentId])
+    shell.submit('queue')
+    shell.submit('queue')
+    expect(sink).toHaveBeenCalledTimes(1)
+    expect(shell.snapshot.phase).toBe('submitting')
+    expect(shell.snapshot.draft).toBe('下载一个宇树机器人g1放到场景中心地面上')
+    expect(shell.snapshot.attachmentIds).toEqual(['native-robot-file'])
+    settlements[0]?.({ kind: 'error', text: 'admission rejected' })
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.draft).toBe('下载一个宇树机器人g1放到场景中心地面上')
+    expect(shell.snapshot.attachmentIds).toEqual(['native-robot-file'])
+    expect(shell.notices.getSnapshot()?.text).toBe('admission rejected')
+    shell.submit('steer')
+    expect(sink).toHaveBeenCalledTimes(2)
+    settlements[1]?.({ kind: 'success' })
+    await vi.waitFor(() => { expect(shell.snapshot.draft).toBe('') })
+    expect(shell.snapshot.phase).toBe('plain')
+    expect(shell.snapshot.attachmentIds).toEqual([])
+    shell.dispose()
+  })
 
-    settlements[0]?.({ kind: 'error' })
-    await vi.waitFor(() => { expect(shell.snapshot.draft).toBe('first') })
-    settlements[1]?.({ kind: 'error' })
-    await vi.waitFor(() => { expect(shell.snapshot.draft).toBe('first\n\nsecond') })
+  it('surfaces synchronous intake rejection and keeps the original draft', () => {
+    const shell = new SessionInputShell({ actx: {} as Context, defaultSink: () => { throw Error('intake unavailable') }, commandAttachments })
+    shell.setDraft('original draft')
+    shell.submit()
+    expect(shell.snapshot.phase).toBe('plain')
+    expect(shell.snapshot.draft).toBe('original draft')
+    expect(shell.notices.getSnapshot()?.text).toBe('intake unavailable')
+    shell.dispose()
   })
 })
 
@@ -355,7 +398,7 @@ it.each(['handled', 'claim', 'message'] as const)('counts only a message after a
   } finally { shell.dispose() }
 })
 
-it('retains occurrence time and Session facts across arbitration and independent failed sends', async () => {
+it('retains occurrence time and Session facts across arbitration and serial admission failures', async () => {
   const pending = Promise.withResolvers<PickOutcome>()
   const submitted = vi.fn()
   const firstSend = Promise.withResolvers<SubmitOutcome>()
@@ -385,6 +428,11 @@ it('retains occurrence time and Session facts across arbitration and independent
     pending.resolve(undefined)
     await vi.waitFor(() => { expect(submitted).toHaveBeenCalledOnce() })
     expect(submitted).toHaveBeenLastCalledWith({ timestamp: 100, source: 'click', mode: 'steer', state: { running: true, runMode: 'plan' } })
+    shell.actions.submit()
+    expect(submitted).toHaveBeenCalledOnce()
+    firstSend.resolve({ kind: 'error', text: 'first rejected' })
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.draft).toBe('/ordinary')
     shell.setDraft('second')
     shell.actions.submit()
     expect(submitted).toHaveBeenLastCalledWith({ timestamp: 200, mode: 'queue', state: { running: false, runMode: 'default' } })

@@ -21,6 +21,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionPromptRequest, SessionRequestId } from '../src/types.ts'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { buildModelCatalog, hasProviderApiKey } from '../src/catalog.ts'
+import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { createSessionTestController, createSessionTestRemote } from './test-remote.ts'
@@ -28,6 +29,15 @@ import { createSessionTestController, createSessionTestRemote } from './test-rem
 function request<P>(payload: P): P {
   return payload
 }
+
+it('projects explicit guest manual-only presentation only while the real default selection is empty', async () => {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(AgentDefaultModelConfig, { manualOnly: true, manualOnlyPresentation: 'guest' })
+  expect(await buildModelCatalog(ctx)).toEqual({ default: null, manualOnlyPresentation: 'guest', routableProviders: [], groups: [], failures: [] })
+  expect(await buildModelCatalog(ctx, { provider: 'fixture', model: 'configured-unavailable' })).not.toHaveProperty('manualOnlyPresentation')
+  await ctx.fiber.dispose()
+})
 
 let nextRequestId = 1
 function promptRequest(

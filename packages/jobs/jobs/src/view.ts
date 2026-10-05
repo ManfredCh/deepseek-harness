@@ -9,7 +9,7 @@
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: the Workspace registry's archive-admission family map this seam merges `job` into.
 import type {} from '@deepseek-ai/dsh-workspace/types'
-import type { JobId } from './brand.ts'
+import type { JobId, JobRegistryId } from './brand.ts'
 
 /**
  * Job lifecycle: `running`, optionally `stopping`, then exactly one terminal
@@ -65,6 +65,8 @@ export interface JobChunk {
 export interface JobView {
   /** The registry-issued id (`<kind>-N`). */
   readonly id: JobId
+  /** Registry lifecycle identity; absence cannot establish continuity after a registry restart. */
+  readonly registryId?: JobRegistryId
   /**
    * The producer kind the job was registered with: a Host-registered
    * `JobKind`, carried as an open string because a browser bundle or a Remote

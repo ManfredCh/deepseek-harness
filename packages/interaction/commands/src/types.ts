@@ -11,6 +11,28 @@ import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { CommandDefinitionId, CommandId } from './brand.ts'
 import type { EncodedImageAttachment } from '@deepseek-ai/dsh-attachment/types'
 
+/** Optional presentation correlation only; it grants no execution or model authority. */
+export interface CommandDisplayMetadata {
+  kind: 'control-gesture'
+  clientId: string
+  gestureId: string
+  worldId: string
+  generation: number
+  entityId: string
+  jointName: string
+  phase: 'update' | 'final' | 'stop'
+  sequence: number
+}
+export function commandDisplay(value: unknown): CommandDisplayMetadata | undefined {
+  if(value===undefined)return
+  const v=value as CommandDisplayMetadata
+  if(!v||v.kind!=='control-gesture'||!['update','final','stop'].includes(v.phase)||!Number.isSafeInteger(v.generation)||v.generation<0||!Number.isSafeInteger(v.sequence)||v.sequence<0||[v.clientId,v.gestureId,v.worldId,v.entityId,v.jointName].some(s=>typeof s!=='string'||!s||s.length>256||/[\u0000-\u001f]/u.test(s)))throw Error('INVALID_COMMAND_DISPLAY')
+  return Object.freeze({kind:v.kind,clientId:v.clientId,gestureId:v.gestureId,worldId:v.worldId,generation:v.generation,entityId:v.entityId,jointName:v.jointName,phase:v.phase,sequence:v.sequence})
+}
+export function commandDisplayKey(value: CommandDisplayMetadata): string {
+  return JSON.stringify([value.clientId,value.gestureId,value.worldId,value.generation,value.entityId,value.jointName])
+}
+
 /** One browser-submitted command attachment: encoded image input or a staged file receipt. */
 export type CommandSubmitAttachment =
   | ({ readonly type: 'image' } & EncodedImageAttachment)
@@ -102,7 +124,7 @@ declare module '@deepseek-ai/dsh-session/types' {
      * a line. `args` is absent when the definition sets `recordInput: false`
      * because an authoritative domain event owns the input payload.
      */
-    'command/run': { commandId: CommandId; name: string; args?: string; source: CommandSource }
+    'command/run': { commandId: CommandId; name: string; args?: string; source: CommandSource; display?: CommandDisplayMetadata }
     /**
      * The paired command settled. `kind`/`text` carry the handler's verbatim
      * outcome (a thrown/aborted handler settles as `kind: 'error'` with the
@@ -114,6 +136,7 @@ declare module '@deepseek-ai/dsh-session/types' {
       kind: 'success' | 'error'
       text?: string
       sourceEventSeq?: import('@deepseek-ai/dsh-session/types').SessionSeq
+      display?: CommandDisplayMetadata
     }
   }
 }

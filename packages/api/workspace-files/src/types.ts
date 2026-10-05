@@ -117,6 +117,9 @@ export interface WorkspaceDirectoryListing {
    * Direct children in the backend's stable name order, cut to the configured
    * entry cap. Presentation order is the caller's choice.
    */
+  readonly absolutePath?: string
+  /** Canonical Session workspace root. */
+  readonly rootPath?: string
   readonly entries: readonly WorkspaceDirectoryEntry[]
   /** Whether the entry cap dropped children from {@link entries}. */
   readonly truncated: boolean
@@ -156,7 +159,11 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'workspace-file/watch-unsupported': { readonly path: string }
     /** No entry exists at that path inside the workspace. */
     'workspace-file/not-found': { readonly path: string }
-    /** The directory listing or watch path resolves outside the Session's workspace root. */
+    'workspace-file/invalid-name': { readonly name: string }
+    'workspace-file/already-exists': { readonly path: string }
+    'workspace-file/write-denied': { readonly path: string }
+    'workspace-file/session-unavailable': { readonly sessionId: string }
+    /** The directory listing path resolves outside the session's workspace root. */
     'workspace-file/outside-workspace': { readonly path: string }
     /** The requested page exceeds the configured byte cap; nothing is returned. */
     'workspace-file/too-large': { readonly path: string; readonly limit: number }

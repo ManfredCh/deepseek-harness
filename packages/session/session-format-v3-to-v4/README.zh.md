@@ -326,6 +326,8 @@ Fork 种子构造归核心 Session 所有，不属于此迁移。原生 V4 接�
 
 该迁移边保留记录的请求前缀。提供方缓存的可用性和淘汰策略不属于本库职责。
 
+本产品对 Alpha4 的八类历史扩展逐项识别和校验：required `session/history-checkout`，以及带 `ignorable: true` 的 `worktree/checkpoint`、`worktree/history-operation`、`worktree/capture`、`lyapunov/tool-observation`、`lyapunov/request-diagnostics`、`lyapunov/recovery-handoff`、`lyapunov/service-diagnostic`。V3→V4 保留这些具体命名，并在 interrupted turn 插入改变序号时迁移 checkout、checkpoint、undo/redo 与 observation Job 的本 Session 引用；Job 代次、时间、工具和消息身份、图像、文件快照与未知副作用事实保持原值。冻结的官方 `RELEASED_V3_EVENT_TYPES` 未增加产品名称；其他未知 required 事件仍被拒绝，其他未知 ignorable 事件仍被转换为不解释的 `plugin:` 名称。V3 前置校验使用独立的历史 JSON surface，不借用当前 V4 Session 解释旧工具 wrapper。
+
 ## 已知限制与待办工作
 
 <a id="known-limitations-and-deferred-work"></a>

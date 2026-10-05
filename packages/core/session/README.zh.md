@@ -181,6 +181,8 @@ session.deriveMessages()         // the derived model history
 
 记录日志不会导致失效，精确重建会保持请求前缀一致。后续请求头若更改配置或 schema，可能从第一处差异开始使复用失效；替换 surface 第 0 号节点的提示词变更会从第一个 token 起使复用失效，而历史内追加则保持直到已缓存历史末尾的前缀可复用。
 
+本产品增加 required、log-only 的 `session/history-checkout` 与 `Session.checkout(throughSeq, { operationId })`。写入时必须处于 turn、step、compaction 之外；目标可以位于旧轮次内部，但派生 surface 的工具调用和顶层 `role=tool` 结果必须完整配对。checkout 保留所有原始事件、身份、序号和执行计数，恢复目标前缀的消息投影；redo 再解释原投影记录。首个晚到的系统消息成为 surface 头并使派生缓存失效。仅外部 log-only 事件允许 `append` 的第三参数携带 `ignorable: true`，核心事件与 surface 元数据不允许该标记。写入器格式仍为 V4；未安装 checkout 词汇的读取器拒绝该 required 事件，不提供降级。
+
 ## 已知限制与延期工作
 
 <a id="known-limitations-and-deferred-work"></a>

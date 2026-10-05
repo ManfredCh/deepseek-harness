@@ -23,6 +23,12 @@ import type { ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepse
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { JsonSchemaNode } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /** Provider-owned diagnostic metadata only; never model/user tool arguments. */
+    'mcp/tool-call-metadata'(execution: Readonly<ToolExecution>): Record<string, string> | undefined
+  }
+}
 
 /** Resolved options relevant to tool bridging. */
 export interface ToolBridgeOptions {
@@ -135,10 +141,13 @@ export async function syncTools(
       inputSchema: tool.inputSchema,
       outputSchema: tool.outputSchema,
       taskRequired: tool.execution?.taskSupport === 'required',
-      call: (args, execution) => client.callTool(
-        { name: tool.name, arguments: args },
-        { signal: execution.signal, timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
-      ),
+      call: (args, execution) => {
+        const metadata = ctx.bail('mcp/tool-call-metadata', execution)
+        return client.callTool(
+          { name: tool.name, arguments: args, ...metadata === undefined ? {} : { _meta: metadata } },
+          { signal: execution.signal, timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
+        )
+      },
     }))
   }
 

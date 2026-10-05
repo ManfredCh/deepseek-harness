@@ -119,7 +119,9 @@ export function apply(ctx: ClientContext): void {
   // through the bound translate; the seat component reads the standard seat.
   const t = ctx.locale.bind(NS)
 
-  ctx.plugin(ModelDirectoryResolver)
+  ctx.plugin(ModelDirectoryResolver, { blockReason: (state: ModelDirectoryState) => state.current === null
+    ? t(state.manualOnlyPresentation === 'guest' ? 'blocked.guest' : 'blocked.unconfigured')
+    : t('blocked.composer') })
 
   // Entry 1: the /model popupSelect over the shared directory.
   ctx.inject(['commandUi', 'modelDirectories'], (scope: ClientContext) => {

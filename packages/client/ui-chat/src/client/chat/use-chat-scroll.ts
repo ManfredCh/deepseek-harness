@@ -26,6 +26,7 @@ interface ChatScrollState extends ChatReadingState {
   readonly navigateToTurn: ChatNavigation['navigateToTurn']
   readonly loadEarlier: ChatNavigation['loadEarlier']
   readonly returnToBottom: () => void
+  readonly navigateToMessage: (direction: -1 | 1) => void
 }
 
 /**
@@ -129,10 +130,22 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     reading.followTail()
   }, [navigation, reading])
 
+  const navigateToMessage = useCallback((direction: -1 | 1): void => {
+    const landing = viewport.scrollToMessage(direction, reading.followingTail)
+    if (landing !== null && 'edge' in landing) {
+      if (landing.edge === -1) { if (hasMore && !loadingOlder) navigation.loadEarlier() }
+      else returnToBottom()
+    } else if (landing !== null) {
+      navigation.cancel()
+      reading.acceptNavigation(landing)
+      if (loadingOlder) viewport.beginPreserving(landing.position)
+    }
+  }, [viewport, reading, navigation, hasMore, loadingOlder, returnToBottom])
+
   return {
     listRef, columnRef, ...state, busyTurn,
     navigateToTurn: navigation.navigateToTurn,
     loadEarlier: navigation.loadEarlier,
-    returnToBottom,
+    returnToBottom, navigateToMessage,
   }
 }

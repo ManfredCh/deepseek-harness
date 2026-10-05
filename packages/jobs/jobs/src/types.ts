@@ -9,7 +9,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { JobId } from './brand.ts'
 import type { JobChannel, JobChunk, JobKind, JobView } from './view.ts'
 
-export { JobId } from './brand.ts'
+export { JobId, JobRegistryId } from './brand.ts'
 export type { JobChannel, JobChunk, JobKind, JobKindMap, JobStatus, JobView } from './view.ts'
 
 /** Terminal result supplied by a producer through {@link JobHooks.done}. */
@@ -215,6 +215,14 @@ export type JobEvent =
      * aborted before the settlement does not count.
      */
     readonly awaited: boolean
+    /**
+     * Atomically claim this terminal notice without reading output. Completion
+     * reporters call it immediately before delivery; read-only observers never
+     * call it. Awaited or teardown settlements, collected cancellation
+     * requests or terminal reads, and a previous claim return false.
+     * @returns true only for the first uncollected completion reporter.
+     */
+    readonly claimReport: () => boolean
   }
   | {
     readonly type: 'output'

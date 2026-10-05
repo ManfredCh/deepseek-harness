@@ -176,3 +176,8 @@
 .titleIcon {
   flex: none;
 }
+
+.directoryRow{display:flex;align-items:center}.directoryRow[data-files-selected]{background:var(--dsw-alias-bg-l2)}
+.crumbs,.pathForm,.toolbar{display:flex;gap:5px;align-items:center;padding:5px 8px;flex-wrap:wrap;flex-shrink:0}
+.pathForm input{flex:1;min-width:100px}.crumbs button,.toolbar button,.createForm button{font:inherit;color:inherit;border:1px solid var(--dsw-alias-border-l3);border-radius:4px;background:transparent;padding:3px 6px}
+.createForm{display:flex;gap:6px;flex-wrap:wrap;padding:8px;border-bottom:1px solid var(--dsw-alias-border-l3)}.createForm span{width:100%;overflow-wrap:anywhere}.createForm input{flex:1;min-width:80px}

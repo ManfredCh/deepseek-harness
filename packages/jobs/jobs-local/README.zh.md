@@ -62,6 +62,10 @@ kind: "package-reference"
 
 -----
 
+每个本地 Registry 生命周期生成一个真实 `registryId`，该实例的所有 Job 投影和终态事件返回同一代次。等待者取得终态、终态输出被消费、销毁或成功通知认领后，`claimReport()` 返回 `false`；认领不读取输出。控制器卸载只撤销控制入口，现有 Job 仍由原生 owner 和 Registry 管理。
+
+`kill` 的第四个可选 `collected` 参数只在调用者自己交付取消结果时显式传 `true`，成功取消后由同一 Registry 记录通知已交付。模型 `job_kill` 使用该参数，因此多个控制器或工具重载不会补发重复通知；人类或 UI 取消省略它，终态通知仍按原生规则交付。取消抛错不提交该标记。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

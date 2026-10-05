@@ -195,6 +195,9 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     { agent, turn, step, provider, failure, retryPolicy: policy, signal }: Parameters<Events['agent/request-error']>[0],
     next: () => Promise<RequestErrorAction>,
   ): Promise<RequestErrorAction> {
+    // 中央owner未确认结果，或明确禁止重发；normal/always都不能新建同一收费请求。
+    if (failure.diagnostic?.retryable === false || failure.diagnostic?.effect === 'unknown'
+      || failure.diagnostic?.effect === 'reserved' || failure.diagnostic?.effect === 'charged') return
     if (policy === undefined) return next()
     if (policy.mode === 'always') {
       if (signal.aborted || lifetime.signal.aborted) return

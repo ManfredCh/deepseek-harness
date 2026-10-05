@@ -8,7 +8,7 @@
  * relative paths, with the sandbox policy root as its no-cwd fallback, not a
  * read-containment restriction. Directory listings and change observations
  * remain workspace-scoped. File-kind checks and configured read caps apply to
- * every preview; this service exposes no mutations.
+ * every preview; explicit create operations use the live Session task policy.
  *
  * A page is cut from `streamText`, which decodes and rejects non-UTF-8 as it
  * goes, so the file is read only up to the first character past the page and
@@ -22,7 +22,7 @@
 import { posix, win32 } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type {} from '@deepseek-ai/dsh-fs'
+import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FsDirEntry, FsInfo, FsPathInfo, FsTarget } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-session'
@@ -322,9 +322,67 @@ export class WorkspaceFiles extends TypertRemoteService {
     const children = await this.ctx.fs.listDir(target, signal)
     return {
       path: workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target)),
+      absolutePath: this.ctx.fs.processPath(target),
+      rootPath: this.ctx.fs.processPath(root),
       entries: children.slice(0, this.config.maxEntries).map(directoryEntry),
       truncated: children.length > this.config.maxEntries,
     }
+  }
+
+  private mutationPolicy(scope: WorkspaceFileScope) {
+    const session = this.ctx.sessions.get(scope.sessionId)
+    if (!session || !session.header.cwd || session.header.cwd !== scope.workspaceRoot) {
+      throw new RemoteError('workspace-file/session-unavailable', 'open this Session before modifying its workspace', { sessionId: String(scope.sessionId) })
+    }
+    const policy = this.ctx.sandboxPolicy.resolve({ session })
+    if (policy.mode === 'read-only') throw new RemoteError('workspace-file/write-denied', 'workspace is read-only', { path: scope.workspaceRoot })
+    return policy
+  }
+
+  private async creationTarget(scope: WorkspaceFileScope, parentPath: string, name: string, signal: AbortSignal) {
+    if (!name.trim() || name === '.' || name === '..' || /[/\\\x00]/.test(name)) {
+      throw new RemoteError('workspace-file/invalid-name', 'use one non-blank file or folder name', { name })
+    }
+    const { root, workspaceRoot, entry } = await this.inspect(scope, parentPath, signal)
+    if (entry.type !== 'directory' && entry.type !== 'symlink') throw new RemoteError('workspace-file/not-directory', 'parent is not a directory', { path: parentPath, kind: entry.type })
+    const parent = await this.confine(root, workspaceRoot, parentPath, signal)
+    const parentEntry = await this.ctx.fs.stat(parent, signal)
+    if (parentEntry?.type !== 'directory') {
+      throw new RemoteError('workspace-file/not-directory', 'parent is not a directory', { path: parentPath, kind: parentEntry?.type ?? 'other' })
+    }
+    const absolute = this.ctx.fs.processPath(parent)
+    const paths = /^[A-Za-z]:[\\/]/.test(absolute) ? win32 : posix
+    const child = paths.join(absolute, name)
+    if (await this.ctx.fs.lstat(child, { cwd: workspaceRoot }, signal)) throw new RemoteError('workspace-file/already-exists', 'file or folder already exists', { path: child })
+    const target = await this.confine(root, workspaceRoot, child, signal)
+    return { root, target }
+  }
+
+  @Remote
+  async createDirectory(workspaceFileScope: WorkspaceFileScope, parentPath: string, name: string, signal: AbortSignal): Promise<{ absolutePath: string; path: string; type: 'directory' }> {
+    const policy = this.mutationPolicy(workspaceFileScope)
+    const { root, target } = await this.creationTarget(workspaceFileScope, parentPath, name, signal)
+    try { await this.ctx.fs.createDirectory(target, signal, policy) }
+    catch (error) {
+      if (error instanceof FsError && error.code === 'FS_STALE_VERSION') throw new RemoteError('workspace-file/already-exists', 'folder already exists', { path: this.ctx.fs.processPath(target) })
+      if (error instanceof FsError && error.code === 'FS_SANDBOX_DENIED') throw new RemoteError('workspace-file/write-denied', error.message, { path: this.ctx.fs.processPath(target) })
+      throw error
+    }
+    return { absolutePath: this.ctx.fs.processPath(target), path: workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target)), type: 'directory' }
+  }
+
+  @Remote
+  async createFile(workspaceFileScope: WorkspaceFileScope, parentPath: string, name: string, signal: AbortSignal): Promise<{ absolutePath: string; path: string; type: 'file' }> {
+    const policy = this.mutationPolicy(workspaceFileScope)
+    const { root, target } = await this.creationTarget(workspaceFileScope, parentPath, name, signal)
+    if (await this.ctx.fs.stat(target, signal)) throw new RemoteError('workspace-file/already-exists', 'file already exists', { path: this.ctx.fs.processPath(target) })
+    try { await this.ctx.fs.writeText(target, '', { kind: 'createIfAbsent' }, signal, policy) }
+    catch (error) {
+      if (error instanceof FsError && ['FS_STALE_VERSION', 'FS_NOT_OBSERVED'].includes(error.code)) throw new RemoteError('workspace-file/already-exists', 'file already exists', { path: this.ctx.fs.processPath(target) })
+      if (error instanceof FsError && error.code === 'FS_SANDBOX_DENIED') throw new RemoteError('workspace-file/write-denied', error.message, { path: this.ctx.fs.processPath(target) })
+      throw error
+    }
+    return { absolutePath: this.ctx.fs.processPath(target), path: workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target)), type: 'file' }
   }
 
   /**

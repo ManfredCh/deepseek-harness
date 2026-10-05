@@ -3,9 +3,9 @@
  * Events in, effects out; zero React / DOM / cordis. Package-private; the
  * SessionInput shell owns editor state and executes the returned effects.
  *
- * Claimed commands occupy the frozen in-flight slot. Ordinary messages detach
- * at Enter, so the editor can clear immediately and accept another message
- * while earlier admissions remain in flight.
+ * Command and ordinary-message admissions occupy the same frozen slot.
+ * Keep the native draft visible until Host admission ACK; accepted running
+ * messages then appear through the existing Session queue/submission projection.
  */
 import type { InputSubmitMode, MessageSubmission } from '../contract/composer-submission.ts'
 import type { CommandClaim, InputEffect, InputEvent, InputState, SubmitAttempt } from '../contract/input.ts'
@@ -47,8 +47,6 @@ export class SubmitMachine {
     readonly attempt: SubmitAttempt
     readonly controller: AbortController
   } | undefined
-  /** Ordinary sends detached from the editor, retained for settlement validation and cancellation. */
-  private readonly detached = new Map<number, AbortController>()
 
   /** Read-only snapshot of the submit-plane state. */
   get state(): SubmitSnapshot {
@@ -77,7 +75,7 @@ export class SubmitMachine {
     switch (ev.type) {
       case 'draft-changed': return this.onDraftChanged(ev.draft)
       case 'claim': return this.onClaim(ev.claim)
-      case 'enter': return this.onEnter(ev.mode, ev.draft, ev.submission)
+      case 'enter': return this.onEnter(ev.mode, ev.draft, ev.submission, ev.hasAttachments === true)
       case 'adjudicated': return this.onAdjudicated(ev.attempt, ev.outcome)
       case 'adjudication-failed': return this.onAdjudicationFailed(ev.attempt, ev.message)
       case 'submit-settled': return this.onSubmitSettled(ev)
@@ -125,24 +123,23 @@ export class SubmitMachine {
     return flight.attempt
   }
 
-  /** Mint an ordinary send that leaves the phase plain. */
-  private beginDetached(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): SubmitAttempt {
+  /** Retain one default-send admission in the same frozen slot as a command. */
+  private beginDefault(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): SubmitAttempt {
     const flight = this.mintAttempt(mode, draft, submission)
-    this.detached.set(flight.attempt.seq, flight.controller)
+    this.inflight = flight
     this.claim = undefined
-    this.phase = 'plain'
+    this.phase = 'submitting'
     return flight.attempt
   }
 
-  /** Default-send effects capture the sink input before the editor commit. */
-  private detachedEffects(attempt: SubmitAttempt): readonly InputEffect[] {
+  /** Host admission is the only authority that permits consuming the native draft. */
+  private defaultEffects(attempt: SubmitAttempt): readonly InputEffect[] {
     return [
       { type: 'default-sink', attempt, draft: attempt.draftSnapshot, mode: attempt.mode },
-      { type: 'commit-draft', retainSuffixOf: attempt.draftSnapshot },
     ]
   }
 
-  private onEnter(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): readonly InputEffect[] {
+  private onEnter(mode: InputSubmitMode, draft: string, submission?: MessageSubmission, hasAttachments = false): readonly InputEffect[] {
     if (this.phase === 'adjudicating' || this.phase === 'submitting') return []
     if (this.phase === 'claimed' && this.claim !== undefined) {
       const attempt = this.beginAttempt(mode, draft, submission)
@@ -150,13 +147,13 @@ export class SubmitMachine {
       return [{ type: 'begin-submit', attempt, claim: this.claim, args: argsAfter(draft, this.claim.token) }]
     }
     const trimmed = draft.trim()
-    if (trimmed === '') return []
+    if (trimmed === '' && !hasAttachments) return []
     if (trimmed.startsWith('/')) {
       const attempt = this.beginAttempt(mode, draft, submission)
       this.phase = 'adjudicating'
       return [{ type: 'adjudicate', attempt, draft }]
     }
-    return this.detachedEffects(this.beginDetached(mode, draft, submission))
+    return this.defaultEffects(this.beginDefault(mode, draft, submission))
   }
 
   private onAdjudicated(
@@ -175,11 +172,13 @@ export class SubmitMachine {
         args: argsAfter(attempt.draftSnapshot, outcome.claim.token),
       }]
     }
-    this.inflight = undefined
-    this.phase = 'plain'
-    if (outcome !== undefined) return []
-    this.detached.set(attempt.seq, flight.controller)
-    return this.detachedEffects(attempt)
+    if (outcome !== undefined) {
+      this.inflight = undefined
+      this.phase = 'plain'
+      return []
+    }
+    this.phase = 'submitting'
+    return this.defaultEffects(attempt)
   }
 
   private onAdjudicationFailed(attempt: SubmitAttempt, message: string): readonly InputEffect[] {
@@ -214,12 +213,19 @@ export class SubmitMachine {
     return text === undefined ? [] : [{ type: 'notice', level: 'error', text }]
   }
 
-  /** Settle one ordinary send independently of current phase and other detached sends. */
+  /** Settle only the current admission; rejected or aborted sends retain their draft. */
   private onSinkSettled(ev: Extract<InputEvent, { type: 'sink-settled' }>): readonly InputEffect[] {
-    if (!this.detached.delete(ev.attempt.seq)) return []
+    const flight = this.inflight
+    if (this.phase !== 'submitting' || flight?.attempt.seq !== ev.attempt.seq) return []
+    this.inflight = undefined
+    this.phase = 'plain'
+    this.claim = undefined
+    const effects: InputEffect[] = ev.ok
+      ? [{ type: 'commit-draft', retainSuffixOf: flight.attempt.draftSnapshot }]
+      : []
     const text = ev.message ?? ev.outcome?.text
-    if (text === undefined) return []
-    return [{ type: 'notice', level: ev.ok && ev.outcome?.kind !== 'error' ? 'info' : 'error', text }]
+    if (text !== undefined) effects.push({ type: 'notice', level: ev.ok && ev.outcome?.kind !== 'error' ? 'info' : 'error', text })
+    return effects
   }
 
   /** Clear after an accepted attachment-only send; it has no text suffix to retain. */
@@ -234,8 +240,6 @@ export class SubmitMachine {
       this.inflight.controller.abort()
       this.inflight = undefined
     }
-    for (const controller of this.detached.values()) controller.abort()
-    this.detached.clear()
     this.phase = 'plain'
     this.claim = undefined
     return []

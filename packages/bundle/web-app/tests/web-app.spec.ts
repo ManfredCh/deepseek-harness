@@ -112,6 +112,30 @@ interface BashContribution {
 }
 
 describe('web-app runtime glue', () => {
+  it('产品装配只给短界面事实，开发源码段退出；原生 WebRuntime/信任快照/URL 变量仍成立', async () => {
+    stageDist()
+    const ctx = new Context()
+    const {server,seat}=fakeHttpServer('0.0.0.0')
+    ctx.provide('webServer',server)
+    provideConnection(ctx)
+    const contributions:BashContribution[]=[]
+    ctx.provide('shellEnv',{register:(contribution:BashContribution)=>{contributions.push(contribution);return()=>{}}} as never)
+    apply(ctx,new Config({openBrowser:false,printUrl:false,surfaceContext:true,surfacePresentation:'product',trustedHosts:['lab.internal']}))
+    await ctx.plugin(SystemPrompt,{includeHarnessIdentity:false,personaPrefix:''})
+    await new Promise(resolve=>setTimeout(resolve,0))
+    const assembly=await ctx.systemPrompt.assemble()
+    expect(assembly.sections.some(section=>section.name==='harness:source')).toBe(false)
+    expect(assembly.sections.some(section=>section.name==='harness:identity')).toBe(false)
+    const text=assembly.sections.find(section=>section.name==='app:web-surface')?.text
+    expect(text).toBe('The current interface is Lyapunov. Resolve references such as "here", "the current scene", or "the selected object" from this session\'s latest workbench facts. An interface acknowledgement does not prove that the displayed image changed; use a real observation from the same window when visual judgement is needed. If no valid window or state is available, report the specific missing information.')
+    expect(text).not.toContain('HMR')
+    expect(text).not.toContain('pnpm')
+    expect(seat()).toBeDefined()
+    expect(ctx.get('webRuntime')).toEqual({lanAddresses:['192.168.1.5'],trustedHosts:['192.168.1.5','lab.internal']})
+    expect(contributions.find(contribution=>contribution.name==='web-runtime')?.resolve()).toEqual({DSH_WEB_URL:'http://127.0.0.1:4567'})
+    await ctx.fiber.dispose()
+  })
+
   it('mounts dist serving, prompt section, bash variables, and publishes the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

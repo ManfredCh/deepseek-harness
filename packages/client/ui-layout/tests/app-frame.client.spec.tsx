@@ -677,3 +677,22 @@ describe('AppFrame frame measurement lifecycle', () => {
     expect(animationFrames.size).toBe(0)
   })
 })
+
+
+it('keeps Conversation and Workspace seats mounted across the product alongside narrow layout', () => {
+  const h = mountFrame(1440)
+  act(() => { h.instance.actions.openRightbar(true, false, true) })
+  const main = h.getByTestId('main-content')
+  const right = h.getByTestId('rightbar-content')
+  resize(700)
+  expect(h.frame.hasAttribute('data-workspace-stacked')).toBe(true)
+  expect(h.rightOwner().canShow).toBe(true)
+  expect(h.getByTestId('main-content')).toBe(main)
+  expect(h.getByTestId('rightbar-content')).toBe(right)
+  resize(1440)
+  expect(h.frame.hasAttribute('data-workspace-stacked')).toBe(false)
+  expect(h.getByTestId('main-content')).toBe(main)
+  expect(h.getByTestId('rightbar-content')).toBe(right)
+  act(() => { h.instance.actions.closeRightbar() })
+  expect(h.instance.getSnapshot().layoutInfo.rightbarAlongside).toBeUndefined()
+})

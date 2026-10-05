@@ -11,6 +11,7 @@ import type {
   ContentBlock, FinishReason, GenerateOptions, Message, RequestMessage, TokenUsage, ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { projectModelMessages } from '@deepseek-ai/dsh-system-prompt'
 
 interface SummaryConfig {
   readonly summarizationProvider: string
@@ -30,7 +31,7 @@ const SUMMARY_CLOSE_TAG = '</compacted-summary>'
  * request, so the provider's KV cache is reused instead of invalidated.
  */
 const COMPACTION_INSTRUCTION = [
-  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.',
+  'Condense the conversation ABOVE into a structured checkpoint for the current task. Preserve the user\'s goals, constraints and authorization so another model can resume the work accurately.',
   '',
   'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.',
   '',
@@ -41,13 +42,13 @@ const COMPACTION_INSTRUCTION = [
   '- [technologies, frameworks, patterns, and conventions in play]',
   '',
   '## Files and Code',
-  '- [exact path: why it matters, key changes or snippets]',
+  '- [artifacts, exact resource/file identities and versions: why they matter, changes or snippets]',
   '',
   '## Errors and Fixes',
   '- [error: how it was resolved, plus any related user feedback]',
   '',
   '## Pending Jobs',
-  '- [explicitly requested work not yet completed]',
+  '- [requested work not yet completed; exact job/request/operation ids, observed phase, outcome and uncertainty]',
   '',
   '## Current Work',
   '- [precisely what was in progress at this checkpoint]',
@@ -59,7 +60,8 @@ const COMPACTION_INSTRUCTION = [
   '- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]',
   '',
   'Rules:',
-  '- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.',
+  '- Use the user\'s language. Preserve exact file paths, commands, error strings, identifiers, resource versions, numeric values, interfaces, source and budget constraints.',
+  '- Distinguish authorization from facts and generated suggestions. Keep unknown outcomes, real errors and the next executable action; do not invent task success, permissions or capabilities.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Do NOT mention this summarization request or that the context was compacted.',
   '- Output only the checkpoint text: do not call any tool or take any other action.',
@@ -142,8 +144,21 @@ export async function summarizeWithLlm(
   }
 
   const assembler = new BlockAssembler()
+  // Use only the current logged system head; an auxiliary call must not invent
+  // a fresh unlogged assembly while replaying a historical compaction prefix.
+  const systemHead = agent.session.deriveMessages().findLast(message =>
+    message.role === 'system' && message.source.kind === 'system-prompt'
+    && message.content.some(block => block.type === 'text' && block.text.length > 0))
+  const systemText = systemHead?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  const replay = projectModelMessages(agent.ctx, input.messages, {
+    scope: agent,
+    sessionId: agent.session.id,
+    purpose: 'compaction',
+    ...systemText === undefined ? {} : { systemText },
+  })
+  assertCompactionProjection(input.messages, replay)
   const messages: RequestMessage[] = [
-    ...input.messages,
+    ...replay,
     deepFreeze({
       role: 'user',
       content: [{ type: 'text', text: COMPACTION_INSTRUCTION }],
@@ -177,6 +192,31 @@ export async function summarizeWithLlm(
     model: options.model,
     maxTokens: config.maxTokens,
     ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
+  }
+}
+
+/** Reject changes to protected logged input before the auxiliary call starts. */
+function assertCompactionProjection(before: readonly Message[], after: readonly Message[]): void {
+  const byId = new Map(after.map(message => [message.id, message]))
+  const ids = new Set(before.map(message => message.id))
+  if (byId.size !== after.length || after.some(message => !ids.has(message.id))) {
+    throw new Error('compaction projection introduced an unlogged or duplicated message identity')
+  }
+  for (const message of before) {
+    const next = byId.get(message.id)
+    const owned = message.role === 'system' && message.source.kind === 'system-prompt'
+      || message.role === 'user' && ['runtime-context', 'skill-catalog', 'lyapunov-domain-pointer',
+        'lyapunov-engine-install', 'plugin:@deepseek-ai/dsh-system-prompt', 'plugin:lyapunov-engine-install'].includes(message.source.kind)
+    if (!owned && JSON.stringify(message) !== JSON.stringify(next)) {
+      throw new Error(`compaction projection changed protected message ${message.id}`)
+    }
+    const binaries = message.content.filter(block => block.type !== 'text')
+    if (binaries.length > 0 && JSON.stringify(binaries) !== JSON.stringify(next?.content.filter(block => block.type !== 'text'))) {
+      throw new Error(`compaction projection changed non-text content of message ${message.id}`)
+    }
+    if (next !== undefined && (next.role !== message.role || JSON.stringify(next.source) !== JSON.stringify(message.source))) {
+      throw new Error(`compaction projection changed role or source of message ${message.id}`)
+    }
   }
 }
 

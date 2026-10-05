@@ -629,6 +629,7 @@ describe('UiWorkspaceService', () => {
       ], 'pending'),
       workspaces: workspaceState([workspace('a', [sid('blank')]), workspace('b', [sid('archived')])], [sid('archived')]),
     })
+    b.uiWorkspace.openSession(sid('blank'))
     await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('blank'))
     expect(b.sessions.create).toHaveBeenCalledExactlyOnceWith({ workspaceId: wid('a'), sessionId: sid('blank') })
     b.sessions.create.mockClear()
@@ -641,6 +642,16 @@ describe('UiWorkspaceService', () => {
     created.resolve(sid('new'))
     await expect(Promise.all([first, second])).resolves.toEqual([sid('new'), sid('new')])
     await expect(b.uiWorkspace.connectWorkspace(wid('missing'))).rejects.toThrow('unknown workspace')
+    expect(b.sessions.retain).not.toHaveBeenCalled()
+  })
+
+  it("creates this window's own blank instead of borrowing another window's draft", async () => {
+    const b = bench({
+      sessions: sessionState([summary('foreign', { blank: true, cwd: '/w/a' })], 'pending'),
+      workspaces: workspaceState([workspace('a', [sid('foreign')])]),
+    })
+    await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('created-a'))
+    expect(b.sessions.create).toHaveBeenCalledExactlyOnceWith({ workspaceId: wid('a') })
     expect(b.sessions.retain).not.toHaveBeenCalled()
   })
 
@@ -765,7 +776,7 @@ describe('UiWorkspaceService', () => {
     })
   })
 
-  it('uses catalog order for Workspace connects without reading the saved selection', async () => {
+  it('does not adopt either foreign catalog blanks or an unclaimed saved selection', async () => {
     persistSelection({ sessionId: sid('saved') })
     const b = bench({
       sessions: sessionState([
@@ -774,7 +785,8 @@ describe('UiWorkspaceService', () => {
       ], 'pending'),
       workspaces: workspaceState([workspace('a', [sid('first'), sid('saved')])]),
     })
-    await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('first'))
+    await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('created-a'))
+    expect(b.sessions.create).toHaveBeenCalledExactlyOnceWith({ workspaceId: wid('a') })
   })
 
   it.each([
@@ -840,6 +852,7 @@ describe('UiWorkspaceService', () => {
         expect(b.sessions.retain).toHaveBeenCalledExactlyOnceWith(sid('created-a'), { source: 'mainView' })
       })
     } else {
+      b.uiWorkspace.openSession(sid('held'))
       await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('created-a'))
     }
     expect(b.sessions.create.mock.calls).toEqual([

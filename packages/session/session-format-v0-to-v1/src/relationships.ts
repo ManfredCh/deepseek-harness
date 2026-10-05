@@ -30,6 +30,12 @@ interface ToolLifecycle {
 
 /** Relationship roles added by a later format while reusing the released validator. */
 export interface ReleasedRelationshipExtensions {
+  /** A later format's validated first system append occupies the surface head. */
+  readonly firstSurfaceHeadSeq?: number
+  /** Additional system-head placements validated by the current format after a history checkout. */
+  readonly surfaceHeadSeqs?: ReadonlySet<number>
+  /** Canonical restored surfaces supplied by the later format at required checkout events. */
+  readonly surfaceCheckouts?: ReadonlyMap<number, readonly number[]>
   /** Event types that must occur inside the current open step. */
   readonly stepEvents?: ReadonlySet<string>
   /** Title-request model input was source-validated and preserved across sequence remapping. */
@@ -63,10 +69,16 @@ export function assertReleasedArtifactRelationships(
   const commandRuns = new Set<string>()
 
   for (const event of artifact.events) {
+    const checkout = extensions.surfaceCheckouts?.get(event.seq)
+    if (checkout !== undefined) {
+      if (openTurn !== null || openStep !== null || openCompaction !== undefined) throw new SessionFormatError('history checkout crosses an open activity')
+      surface = [...checkout]
+      continue
+    }
     const extensionStepEvent = extensions.stepEvents?.has(event.type) === true
     if (RELEASED_V0_EVENT_DISPOSITIONS[event.type] === undefined && !extensionStepEvent) continue
     const data = releasedV0Record(event.data, `${event.type} ${event.seq} data`)
-    if (SURFACE_TYPES.has(event.type)) surface = applySurface(surface, event)
+    if (SURFACE_TYPES.has(event.type)) surface = applySurface(surface, event, event.seq === extensions.firstSurfaceHeadSeq || extensions.surfaceHeadSeqs?.has(event.seq) === true)
     if ((event.type === 'turn/start' || event.type === 'turn/end')
       && openCompaction !== undefined && !staleCompactionStarts.has(openCompaction.startSeq)) {
       throw new SessionFormatError(`${event.type} crosses an open compaction`)
@@ -401,10 +413,10 @@ function isExactToolNotStartedRepair(
       === 'The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed.'
 }
 
-function applySurface(surface: readonly number[], event: SessionFormatEvent): number[] {
+function applySurface(surface: readonly number[], event: SessionFormatEvent, prepend: boolean): number[] {
   const operation = event['surfaceOp']
   if (operation === undefined) throw new SessionFormatError(`${event.type} requires a surfaceOp marker`)
-  if (operation === 'append') return [...surface, event.seq]
+  if (operation === 'append') return prepend ? [event.seq, ...surface] : [...surface, event.seq]
   const replace = operation as { readonly start: number; readonly end: number }
   const start = surface.indexOf(replace.start)
   const end = surface.indexOf(replace.end)

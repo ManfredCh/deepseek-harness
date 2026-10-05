@@ -345,14 +345,16 @@ describe('Conversation inject API', () => {
 
     actions.setDraft('hello')
     actions.submit()
-    // Optimistic commit clears the draft at enter; the prompt lands after the
-    // paint-yield inside the send pipeline.
-    expect(state.getSnapshot().draft).toBe('')
+    // The native draft remains visible through admission, including the pipeline paint yield.
+    expect(state.getSnapshot().draft).toBe('hello')
+    expect(state.getSnapshot().phase).toBe('submitting')
     await vi.waitFor(() => {
       expect(b.sessionFake.prompt).toHaveBeenCalledWith(
         [{ type: 'text', text: 'hello' }], 'queue', expect.any(AbortSignal), expect.any(String),
       )
     })
+
+    await vi.waitFor(() => { expect(state.getSnapshot().draft).toBe('') })
 
     b.sessionFake.prompt.mockResolvedValueOnce({
       ok: false, error: new RemoteError('session/agent-busy', 'busy', { reason: 'busy' }),

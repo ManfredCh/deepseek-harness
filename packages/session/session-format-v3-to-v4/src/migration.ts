@@ -2,7 +2,7 @@
 
 import { defineSessionFormatMigration, SessionFormatError, SessionFormatUnsupportedMigrationError, isSessionFormatJsonObject, sessionFormatCount } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatEvent, SessionFormatEventRun, SessionFormatJsonObject, SessionFormatJsonValue, SessionFormatMigration, SessionFormatMigrationContext, SessionFormatMigrationStage, SessionFormatMigrationStageInput } from '@deepseek-ai/dsh-session-format'
-import { assertReleasedV3Header } from '@deepseek-ai/dsh-session-format-v2-to-v3'
+import { assertReleasedV3Header, assertProductHistoryEvent, remapProductHistoryReferences } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { mapEventMessages, rewriteV3MessageSource } from './sources.ts'
 import { liftToolResult } from './tool-role.ts'
 import { migrateV3EventContent } from './content.ts'
@@ -85,6 +85,12 @@ class ReleasedV3ToV4Stage implements SessionFormatMigrationStage {
         throw new SessionFormatUnsupportedMigrationError('format v3 delivery marker claims target format v4')
       }
       if (deliveryId !== undefined && deliveryId !== this.input.sourceHeader.id) this.foreignDeliverySeq = event.seq
+    }
+    if (assertProductHistoryEvent(event)) {
+      const remapped = remapProductHistoryReferences(event, targetSeq, this.mapping)
+      this.mapping.push(targetSeq)
+      context.emitEvent(remapped)
+      return
     }
     const opaque = namespaceV3OpaqueEvent(event)
     if (opaque !== event) {

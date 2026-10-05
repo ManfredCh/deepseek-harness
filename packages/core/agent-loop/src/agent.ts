@@ -16,7 +16,7 @@ import type {
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
 import { agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
-import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
   createAssistantMessage,
@@ -34,10 +34,11 @@ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Context } from '@deepseek-ai/cordis'
 import { ReactLoopInbox } from './inbox.ts'
-import { RuntimeContextProjection } from './runtime-context.ts'
+import { RuntimeContextProjection, contextSnapshotIntent } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
+import { deriveModelRequestMessages } from './model-input.ts'
 
 type Phase =
   | { kind: 'idle'; lastTurn: number }
@@ -59,6 +60,68 @@ type PreparedStep =
     startsRequestSeries?: true
     assembly: PromptAssembly
   }
+
+/** One model-request phase owns its deadline; the turn and its tools keep their own signal. */
+class RequestPhaseBudget {
+  private readonly startedAt = performance.now()
+  private controller?: AbortController
+  private timer?: ReturnType<typeof setTimeout>
+  private timeoutMs?: number
+  private abortParent?: () => void
+  constructor(private readonly parent: AbortSignal) {}
+  get signal(): AbortSignal { return this.controller?.signal ?? this.parent }
+  get expired(): boolean { return this.timeoutMs !== undefined && performance.now() - this.startedAt >= this.timeoutMs }
+  failure(): LlmError { return new LlmError('The model request phase timed out. Adjust the request before continuing.', 'REQUEST_PHASE_TIMEOUT') }
+  configure(policy: ResolvedRetryPolicy | undefined): void {
+    if (this.controller || policy?.mode !== 'normal' || policy.requestPhaseTimeoutMs === undefined) return
+    this.timeoutMs = policy.requestPhaseTimeoutMs
+    this.controller = new AbortController()
+    this.abortParent = () => this.controller!.abort(this.parent.reason)
+    if (this.parent.aborted) this.abortParent()
+    else this.parent.addEventListener('abort', this.abortParent, { once: true })
+    this.timer = setTimeout(() => this.controller!.abort(this.failure()), Math.max(1, this.timeoutMs - (performance.now() - this.startedAt)))
+    this.assertOpen()
+  }
+  assertOpen(): void {
+    this.parent.throwIfAborted()
+    if (this.expired) { this.controller?.abort(this.failure()); throw this.failure() }
+  }
+  async wait<T>(operation: Promise<T>): Promise<T> {
+    // 未配置阶段预算时，恢复operation已经启动；用户同步取消仍须等待其原有清理。
+    if (!this.controller) return operation
+    this.assertOpen()
+    const signal = this.controller.signal
+    let abort: (() => void) | undefined
+    try {
+      return await Promise.race([operation, new Promise<never>((_, reject) => {
+        abort = () => { try { this.assertOpen(); reject(signal.reason) } catch (error) { reject(error) } }
+        if (signal.aborted) abort()
+        else signal.addEventListener('abort', abort, { once: true })
+      })])
+    } finally { if (abort) signal.removeEventListener('abort', abort) }
+  }
+  async *stream(source: AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> {
+    if (!this.controller) { yield* source; return }
+    const iterator = source[Symbol.asyncIterator]()
+    let ended = false
+    try {
+      while (true) {
+        const next = await this.wait(iterator.next())
+        this.assertOpen()
+        if (next.done) { ended = true; return }
+        yield next.value
+      }
+    } finally {
+      // The deadline already aborts the actual provider request. Do not let an unresponsive
+      // iterator cleanup keep the model phase open after its bounded terminal result.
+      if (!ended && iterator.return) void Promise.resolve(iterator.return()).catch(() => {})
+    }
+  }
+  dispose(): void {
+    clearTimeout(this.timer)
+    if (this.abortParent) this.parent.removeEventListener('abort', this.abortParent)
+  }
+}
 
 /** Remove adapter-derived values before plugins propose the next request config. */
 function requestProposal(header: EpochHeader): LlmCallConfig {
@@ -404,8 +467,16 @@ export class ReactLoopAgent implements Agent {
     const { assembly } = decision
     const renderedPrompt = renderPrompt(assembly)
     let firstAttempt = true
+    const budget = new RequestPhaseBudget(signal)
+    try {
+    if (this.options.provider) {
+      try { budget.configure(this.loopCtx.llm.providerRetryPolicy(this.options.provider)) }
+      catch (error) { if (!(error instanceof LlmError) || error.code !== 'NO_ADAPTER') throw error }
+    }
     while (true) {
-      const { config, preparedCall } = await this.prepareRequest(turn, step, signal)
+      budget.assertOpen()
+      const { config, preparedCall } = await budget.wait(this.prepareRequest(turn, step, budget.signal))
+      budget.configure(preparedCall?.retryPolicy)
       const startsRequestSeries = firstAttempt && decision.startsRequestSeries === true
       const commits = this.systemPrompt.project(renderedPrompt, {
         inHistory: preparedCall?.systemPromptUpdate === 'in-history',
@@ -418,11 +489,11 @@ export class ReactLoopAgent implements Agent {
       }
       if (firstAttempt) {
         for (const message of decision.messages) {
-          this.session.append('user/message', message, { surfaceOp: 'append' })
+          this.session.append('user/message', message, contextSnapshotIntent(this.session, message))
         }
       }
       firstAttempt = false
-      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
+      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, budget.signal)
       const live = new AssistantStreamAttempt(
         this.session.id,
         ++this.assistantAttemptCounter,
@@ -432,19 +503,22 @@ export class ReactLoopAgent implements Agent {
         (frame) => { this.dispatch.emit('agent/assistant-stream', { frame }) },
       )
       let started = false
+      let terminalReceived = false
       try {
         const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request)
         signal.throwIfAborted()
         live.start()
         started = true
-        for await (const chunk of stream) {
+        for await (const chunk of budget.stream(stream)) {
           signal.throwIfAborted()
           live.push(chunk)
+          if (chunk.type === 'finish') terminalReceived = true
         }
         signal.throwIfAborted()
       } catch (error: unknown) {
         if (!started) throw error
         try {
+          if (!signal.aborted && budget.expired && !terminalReceived) live.push({ type: 'finish', reason: { kind: 'error', failure: { code: 'REQUEST_PHASE_TIMEOUT', message: budget.failure().message } } })
           if (signal.aborted) {
             const content = live.interruptedBlocks()
             if (content.length > 0) {
@@ -482,6 +556,7 @@ export class ReactLoopAgent implements Agent {
             { cause: error },
           )
         }
+        if (!signal.aborted && budget.expired) throw budget.failure()
         throw error
       }
       try {
@@ -491,18 +566,21 @@ export class ReactLoopAgent implements Agent {
             'assistant/attempt',
             () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
           )
-          const action = await this.dispatch.waterfall(
+          budget.assertOpen()
+          if (finish.failure.code === 'REQUEST_PHASE_TIMEOUT') throw budget.failure()
+          const action = await budget.wait(this.dispatch.waterfall(
             'agent/request-error', {
               turn,
               step,
               provider: request.provider,
               failure: finish.failure,
               retryPolicy: preparedCall?.retryPolicy,
-              signal,
+              signal: budget.signal,
             },
             () => Promise.resolve<RequestErrorAction>(undefined),
-          )
+          ))
           signal.throwIfAborted()
+          budget.assertOpen()
           if (action?.kind !== 'retry') {
             throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
           }
@@ -527,6 +605,7 @@ export class ReactLoopAgent implements Agent {
             stream: live.stream,
           }, { surfaceOp: 'append' }).seq,
         )
+        budget.dispose()
         if (finish.kind === 'max-tokens') return { kind: 'max-tokens' }
 
         const toolCalls = message.content.filter(block => block.type === 'tool-call')
@@ -541,6 +620,7 @@ export class ReactLoopAgent implements Agent {
         throw error
       }
     }
+    } finally { budget.dispose() }
   }
 
   /** Resolve request config and bind its adapter before admitting model-visible input. */
@@ -668,7 +748,7 @@ export class ReactLoopAgent implements Agent {
 
     // canonicalHeader is shallow; append logs a detached snapshot, not these local values.
     deepFreeze(header)
-    const boundaryMessages = session.deriveMessages()
+    const boundaryMessages = deriveModelRequestMessages(this.ctx, session, this)
     for (const message of boundaryMessages) {
       if (this.frozenMessages.has(message)) continue
       deepFreeze(message)

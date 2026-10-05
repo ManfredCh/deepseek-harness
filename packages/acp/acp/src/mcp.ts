@@ -57,11 +57,11 @@ function resolveMcpConfigs(servers: readonly McpServer[], sessionCwd: string): M
       }))
       return { ...config, env }
     }
-    if (server.type === 'http') {
+    if (server.type === 'http' || server.type === 'sse') {
       assertHttpUrl(server.url, `mcpServers[${index}].url`)
       const headers = entriesToRecord(server.headers, `mcpServers[${index}].headers`, 'header')
       const config = validateClientConfig(index, () => McpClient.Config({
-        transport: 'streamable-http',
+        transport: server.type === 'sse' ? 'sse' : 'streamable-http',
         serverName,
         url: server.url,
         headers,

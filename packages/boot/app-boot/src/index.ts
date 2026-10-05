@@ -237,6 +237,11 @@ export function loadLayeredEnv(
 ): LaunchEnvironmentSnapshot {
   const home = resolveDshHome()
   const inherited = { ...process.env } as Record<string, string>
+  // The launching composition may require a credential-free local application.
+  // Check before opening either file so project/home .env cannot undo that boundary.
+  if (process.env.DSH_ENV_FILES === 'disabled') {
+    return createLaunchEnvironmentSnapshot([{ source: 'process', values: inherited }])
+  }
   // Parse both layers first: a rejection must not leave one file applied.
   const project = readEnvLayer(binName, cwd, warn, home)
   const user = home === resolve(cwd) ? undefined : readEnvLayer(binName, home, warn, home)

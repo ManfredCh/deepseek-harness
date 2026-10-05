@@ -26,7 +26,7 @@ describe('createFilesStore', () => {
     const { actions } = store
     const getSnapshot = (): ReturnType<typeof store.getSnapshot> => store.getSnapshot()
     actions.start(TAB, ROOT)
-    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, levels: {}, expanded: [ROOT], scrollTop: 0, autoRefresh: true })
+    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, currentPath: ROOT, history: [ROOT], historyIndex: 0, showHidden: false, levels: {}, expanded: [ROOT], scrollTop: 0, autoRefresh: true })
   })
 
   it('shows a failed initial listing and replaces it with a successful retry', () => {
@@ -86,7 +86,7 @@ describe('createFilesStore', () => {
     actions.scrolled(TAB, 120)
     actions.autoRefresh(TAB, false)
     actions.reset(TAB)
-    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, levels: {}, expanded: [ROOT, child], scrollTop: 120, autoRefresh: false })
+    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, currentPath: ROOT, history: [ROOT], historyIndex: 0, showHidden: false, levels: {}, expanded: [ROOT, child], scrollTop: 120, autoRefresh: false })
   })
 
   it('keeps the automatic setting independent for each tab', () => {

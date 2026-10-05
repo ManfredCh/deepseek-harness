@@ -2,7 +2,7 @@
 
 import { SessionFormatError, isSessionFormatJsonObject } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatCodec, SessionFormatCurrentEncoder, SessionFormatHeader, SessionFormatEvent } from '@deepseek-ai/dsh-session-format'
-import { releasedV2SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
+import { assertProductHistoryEvent, releasedV2SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { assertV4SourceRowAdmission } from './message-sources.ts'
 import { assertV4RetiredSyntax } from './retired-syntax.ts'
 import { assertV4SystemMessageFields } from './system-message.ts'
@@ -61,6 +61,7 @@ export const releasedV4SessionFormatCodec = Object.freeze({
  */
 export function assertV4RowAdmission(row: unknown, knownEventTypes?: ReadonlySet<string>): void {
   if (isSessionFormatJsonObject(row)) {
+    assertProductHistoryEvent(row as SessionFormatEvent)
     if (row['type'] === 'developer/message' && row['ignorable'] === true
       && knownEventTypes?.has('developer/message') !== true) return
     assertV4DeveloperData(row as unknown as SessionFormatEvent)

@@ -29,7 +29,7 @@ Mount this package wherever agents are created without an explicit model route. 
 
 ### Configure the default
 
-The composition requires a provider and model. Consumers read the live references even when no configuration editor is mounted.
+A normal composition requires a complete provider and model. An explicit `manualOnly: true` composition remains empty and rejects model acquisition. An `initiallyUnconfigured: true` composition starts empty and accepts only a complete explicit selection written through the native profile editor; a failed write leaves it empty. `optionalSelection()` exposes that empty state without inventing a route, and `manualOnlyPresentation: guest` is presentation metadata only. Consumers read the live references even when no configuration editor is mounted.
 
 ```yaml
 - name: '@deepseek-ai/dsh-agent-default-model'

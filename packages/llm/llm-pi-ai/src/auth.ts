@@ -200,7 +200,7 @@ export function credentialStoreFrom(ctx: Context): CredentialStore {
  * @param ctx - the plugin context carrying the optional `ctx.credentials`.
  * @returns the auth context to hand `createModels()`.
  */
-export function authContextFrom(ctx: Context): AuthContext {
+export function authContextFrom(ctx: Context, allowAmbientCredentials = true): AuthContext {
   return {
     async env(name) {
       // pi-ai asks about arbitrary provider-declared names; one that is not a
@@ -211,9 +211,11 @@ export function authContextFrom(ctx: Context): AuthContext {
         const hit = await credentials?.resolve(credentialRef(name))
         if (hit !== undefined) return hit.value
       }
+      if (!allowAmbientCredentials) return undefined
       return launchEnvironmentOf(ctx).get(name)?.value
     },
     async fileExists(path) {
+      if (!allowAmbientCredentials) return false
       const expanded = path.startsWith('~/') || path === '~'
         ? resolvePath(homedir(), path.slice(1).replace(/^\//, ''))
         : path

@@ -205,6 +205,8 @@ const handle = await ctx.agents.create({
 
 恢复结果追加在既有历史之后，保留其可复用前缀。
 
+本产品通过同一 `deriveModelRequestMessages` 纯派生链构造正式请求并执行重建不变量：从同一 Session surface 读取消息，只保留已列名的当前状态来源的最新文本，再调用实际 Agent 作用域中安装的 `ModelMessageProjection`。旧快照的非文本块保留；人工授权、工具结果、developer 消息、来源、消息身份、原图和工具历史不得被投影修改。请求仍记录原生 `headerSeq`、工具增减与 `toolHistory`，不变量同时比较消息、完整请求头和历史工具定义。可配置的模型请求阶段 deadline 覆盖准备、stream 和重试等待；结束该阶段后释放 deadline，工具仍使用原 turn signal，显式用户取消仍记录为 `aborted`。
+
 ## 已知限制与延期工作
 
 <a id="known-limitations-and-deferred-work"></a>

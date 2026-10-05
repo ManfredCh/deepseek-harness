@@ -26,6 +26,7 @@ import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai
 import type { LlmDiscoveredModel, LlmModelDiscoveryOperation } from '@deepseek-ai/dsh-llm'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import { catalogModels } from './catalog.ts'
+import { assertManagedDiscoveryEndpoint, sameManagedEndpoint } from './managed-discovery.ts'
 
 /**
  * Protocols whose model listing this module can read. OpenAI protocols use
@@ -250,9 +251,13 @@ function usableProbeKey(raw: string): string {
 
 /** Host-owned profile inputs that a configuration draft deliberately omits. */
 export interface StoredModelDiscoveryProfile {
+  /** Host-composed endpoint for the named route, used as the credential origin. */
+  readonly configuredBaseURL: string | undefined
   /** Deployment headers configured on the named route. */
   readonly headers: Readonly<Record<string, string>> | undefined
-  /** Resolve the named route's credential only when the draft carries none. */
+  /** Endpoint fixed by the deployment for a managed route. */
+  readonly managedBaseURL: string | undefined
+  /** Resolve the named route's credential only for its configured endpoint. */
   readonly resolveApiKey: () => Promise<string | undefined>
 }
 
@@ -298,6 +303,14 @@ export async function discoverModels(
   // when the endpoint speaks something else (an Anthropic gateway answers 401,
   // which reads as a credential problem), and hand-entry remains the way out.
   const api = request.api ?? 'openai-completions'
+  const stored = storedProfile?.()
+  if (stored?.managedBaseURL !== undefined) {
+    assertManagedDiscoveryEndpoint(request.provider ?? '', stored.managedBaseURL, request.baseURL)
+  }
+  // A draft endpoint is untrusted input even when the route itself is not
+  // managed. Only bind deployment-owned headers and credentials to the exact
+  // configured endpoint; a changed origin gets a clean request instead.
+  const endpointMatchesStored = sameManagedEndpoint(stored?.configuredBaseURL, request.baseURL)
   if (!LISTABLE_PROTOCOLS.has(api)) {
     throw new LlmError(
       `pi-ai protocol "${api}" has no model listing this build can read; enter this provider's models by hand`,
@@ -310,12 +323,14 @@ export async function discoverModels(
   // and its credential resolver remains lazy so a typed key cannot fail over a
   // stored credential it supersedes. A route may still authenticate through a
   // deployment-owned Authorization header when neither key exists.
-  const stored = storedProfile?.()
-  const supplied = request.apiKey ?? await stored?.resolveApiKey()
+  const supplied = request.apiKey
+    ?? (endpointMatchesStored ? await stored?.resolveApiKey() : undefined)
   const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
   let response: Response
   try {
-    const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
+    const headers = new Headers(
+      endpointMatchesStored && stored?.headers !== undefined ? Object.entries(stored.headers) : undefined,
+    )
     headers.set('accept', 'application/json')
     if (api === 'anthropic-messages') {
       headers.set('anthropic-version', ANTHROPIC_VERSION)
@@ -327,6 +342,7 @@ export async function discoverModels(
     response = await fetch(url, {
       method: 'GET',
       headers,
+      redirect: 'manual',
       ...request.signal === undefined ? {} : { signal: request.signal },
     })
   } catch (error: unknown) {
@@ -334,6 +350,9 @@ export async function discoverModels(
       throw new LlmError('model discovery aborted by caller', 'ABORTED', { cause: error })
     }
     throw new LlmError(`could not reach ${url}`, 'DISCOVERY_FAILED', { cause: error })
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new LlmError(`${url} returned a redirect; model discovery will not follow it`, 'DISCOVERY_FAILED')
   }
   if (!response.ok) {
     throw new LlmError(

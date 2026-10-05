@@ -8,6 +8,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { InboxState } from '@deepseek-ai/dsh-agent/types'
+import type { CommandResult } from '@deepseek-ai/dsh-commands'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ArbitrateKey, ArbitrateOutcome, Occurrence, ReferenceInsert, TokenSpan } from './draft-editor.ts'
@@ -32,6 +34,16 @@ export interface DraftAttachmentSerializationResult {
 export interface SubmitOutcome {
   readonly kind: 'success' | 'error'
   readonly text?: string
+  /** Native result for local effects after settlement; it is not echoed as an input notice. */
+  readonly commandResult?: CommandResult
+}
+
+/** Local initiating-composer effect after a successful claimed command commits its draft. */
+export interface ConversationCommandSettled {
+  readonly sessionId: SessionId
+  readonly token: string
+  readonly outcome: SubmitOutcome
+  readonly signal: AbortSignal
 }
 
 /** Command-mode credential supplied by one input-trigger source. */
@@ -130,6 +142,13 @@ export interface InputTriggerController {
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Apply client-only effects of this composer's own settled command.
+     * Remote journal observations never emit this event.
+     * @param request - initiating Session identity and command result.
+     * @mode parallel
+     */
+    'conversation/command-settled'(request: ConversationCommandSettled): void | Promise<void>
     /**
      * Claim a command token for the scoped input machine.
      * @param request - command claim and span.
@@ -271,15 +290,14 @@ export interface InputState {
 /**
  * One in-flight submission attempt: the ONLY id concept in the submit plane.
  * Created on enter; carried by adjudicated/submit-settled/sink-settled
- * events; stale attempts are dropped (anti-backwash). Command attempts hold
- * the single frozen in-flight slot; default-sink attempts run detached and
- * concurrently. release/session teardown aborts them all, keeping every
+ * events; stale attempts are dropped (anti-backwash). Command and default-sink attempts share
+ * one frozen admission slot. release/session teardown aborts it, keeping every
  * promise bounded.
  */
 export interface SubmitAttempt {
   readonly seq: number
   readonly signal: AbortSignal
-  /** Clipboard-projection draft captured before an optimistic default-send commit. */
+  /** Clipboard-projection draft retained until Host admission succeeds. */
   readonly draftSnapshot: string
   /** Default-message delivery intent retained while slash adjudication is pending. */
   readonly mode: InputSubmitMode
@@ -298,12 +316,12 @@ export type InputEvent =
   /** The editor applied a claim-token replacement: enter claimed. */
   | { readonly type: 'claim'; readonly claim: CommandClaim }
   /** Enter submission with the current clipboard projection. */
-  | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission }
+  | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission; readonly hasAttachments?: boolean }
   | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }
   | { readonly type: 'adjudication-failed'; readonly attempt: SubmitAttempt; readonly message: string }
   /** Settlement carries the live clipboard projection for suffix-retention and claim re-entry decisions. */
   | { readonly type: 'submit-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly draft: string; readonly outcome?: SubmitOutcome; readonly message?: string }
-  /** Settlement of one optimistic default send, independent of the frozen command slot. */
+  /** Host admission settlement of one ordinary message send. */
   | { readonly type: 'sink-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly outcome?: SubmitOutcome; readonly message?: string }
   /** Commit an attachment-only send whose empty draft did not need an attempt. */
   | { readonly type: 'send-committed' }
@@ -316,7 +334,7 @@ export type InputEvent =
 export type InputEffect =
   | { readonly type: 'adjudicate'; readonly attempt: SubmitAttempt; readonly draft: string }
   | { readonly type: 'begin-submit'; readonly attempt: SubmitAttempt; readonly claim: CommandClaim; readonly args: string }
-  /** Detached default send; the shell captures its editor projection before the following commit effect. */
+  /** Default send; the shell consumes its editor projection only after admission succeeds. */
   | {
     readonly type: 'default-sink'
     readonly attempt: SubmitAttempt

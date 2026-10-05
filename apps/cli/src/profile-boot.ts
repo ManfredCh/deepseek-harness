@@ -35,7 +35,7 @@ import {
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { installProxyFromEnvironment } from '@deepseek-ai/dsh-http-proxy'
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
-import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
+import { provideCmdline, type AppInterrupt, type AppReady } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 
 const NAME = 'dsh'
@@ -60,6 +60,26 @@ function createAppReady(): { service: AppReady; commit(): void } {
       ready = true
       for (const listener of [...listeners]) listener()
       listeners.clear()
+    },
+  }
+}
+
+/** The launcher keeps SIGINT shutdown unless a live application activity explicitly consumes it. */
+function createAppInterrupt(): { service: AppInterrupt; consume(): boolean } {
+  const listeners = new Set<(signal: 'SIGINT') => boolean>()
+  return {
+    service: {
+      onInterrupt(listener) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+    },
+    consume() {
+      for (const listener of [...listeners]) {
+        try { if (listener('SIGINT') === true) return true }
+        catch (_error) { /* A failed handler cannot prevent the launcher's native shutdown. */ }
+      }
+      return false
     },
   }
 }
@@ -266,6 +286,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       options.profile, options.patchFiles, options.fromDefaultProfile, options.resolvedProfile,
     )
     const appReady = createAppReady()
+    const appInterrupt = createAppInterrupt()
     const shutdown = createProcessShutdown(dispose)
     const signalShutdown = new AbortController()
     const interrupt = (code: number): void => {
@@ -278,7 +299,10 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // surface — the launcher does not know whether the app considered its work
     // complete; SIGINT is a user interrupt and reports 130.
     process.on('SIGTERM', () => { interrupt(0) })
-    process.on('SIGINT', () => { interrupt(130) })
+    process.on('SIGINT', () => {
+      if (!signalShutdown.signal.aborted && appInterrupt.consume()) return
+      interrupt(130)
+    })
     installFailLoud(NAME, process, async () => {
       await app.current?.fiber.dispose()
     })
@@ -308,6 +332,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
         args: options.args,
         exit: code => void shutdown.shutdown(code),
         ready: appReady.service,
+        interrupt: appInterrupt.service,
       })
     })
     app.current = ctx

@@ -3,11 +3,11 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, ToolCallId, type Message } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, createMessage, createToolResultMessage, ToolCallId, type Message } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, MessageSource } from '@deepseek-ai/dsh-llm'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import {
-  SESSION_FORMAT_VERSION, Session, SessionId, type SessionEvent, type UserMessage,
+  SESSION_FORMAT_VERSION, Session, SessionId, SessionSeq, type SessionEvent, type UserMessage,
 } from '@deepseek-ai/dsh-session'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
@@ -186,6 +186,40 @@ async function mintAgentScope(ctx: Context, subject: string | Agent): Promise<{ 
 }
 
 describe('dsh-tool-skill', () => {
+  it('reuses only a visible successful V4 skill body with the same complete authority and reloads after checkout', async () => {
+    const home = await tempDir('reuse-skill')
+    const ctx = await setup(home)
+    const owner = agentForCwd(home)
+    const resourceBase = { kind: 'directory' as const, path: join(home, 'resources') }
+    let release = ctx.skills.register({ name: 'reuse-skill', description: 'Reusable instructions', source: 'runtime', provider: 'first-provider', resourceBase, content: 'Exact instructions.' })
+    const execute = () => ctx.tools.execute({ name: 'skill', arguments: { name: 'reuse-skill' }, callId: ToolCallId('next-skill'), signal: testToolSignal, agent: owner })
+    const first = await execute()
+    if (first.isError) throw new Error('expected successful skill load')
+    expect(first.value).toMatchObject({ content: 'Exact instructions.', reused: false })
+    openMessageTurn(owner.session)
+    owner.session.append('step/start', { turn: 1, step: 1 })
+    const callId = ToolCallId('loaded-skill')
+    owner.session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createMessage({ role: 'assistant', source: { kind: 'model', provider: 'fixture', model: 'fixture' }, content: [{ type: 'tool-call', id: callId, name: 'skill', arguments: '{"name":"reuse-skill"}' }] }) }, { surfaceOp: 'append' })
+    owner.session.append('tool/call', { turn: 1, step: 1, callId, name: 'skill', arguments: '{"name":"reuse-skill"}' })
+    owner.session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId, content: first.content, isError: false }), ...first.meta === undefined ? {} : { meta: first.meta } }, { surfaceOp: 'append' })
+    owner.session.append('step/end', { turn: 1, step: 1 })
+    const boundary = owner.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } }).seq
+    const repeated = await execute()
+    expect(repeated.value).toMatchObject({ reused: true, content: '' })
+    release()
+    release = ctx.skills.register({ name: 'reuse-skill', description: 'Reusable instructions', source: 'runtime', provider: 'second-provider', resourceBase, content: 'Exact instructions.' })
+    const changedProvider = await execute()
+    expect(changedProvider.value).toMatchObject({ reused: false, content: 'Exact instructions.' })
+    expect(changedProvider.meta).not.toEqual(first.meta)
+    release()
+    ctx.skills.register({ name: 'reuse-skill', description: 'Reusable instructions', source: 'runtime', provider: 'first-provider', resourceBase, content: 'Exact instructions.' })
+    owner.session.checkout(-1)
+    expect((await execute()).value).toMatchObject({ reused: false, content: 'Exact instructions.' })
+    owner.session.checkout(SessionSeq(boundary))
+    expect((await execute()).value).toMatchObject({ reused: true, content: '' })
+    await ctx.fiber.dispose()
+  })
+
   it('registers the skill tool schema and removes it on dispose', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
@@ -315,7 +349,8 @@ describe('dsh-tool-skill', () => {
             '- `z-skill`: Long description Long description Long descript...',
             '</available_skills>',
             '',
-            "If the user names a skill, or the task clearly matches a skill's description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.",
+            "Load one skill at a time when the user names it or the next action clearly needs its contract. Follow its full instructions, and reuse an unchanged body already visible in this conversation. Catalog summaries are discovery hints; do not infer a skill's instructions from them or load skills for incidental keywords.",
+            'The user\'s instructions take precedence over anything a skill says. If following a skill would make you pause, ask permission, leave the work unfinished, or diverge from the request, say so and name the exact SKILL.md and the instruction responsible, separating a requirement the skill states from your own reading of it.',
             'A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the `skill` tool again for that skill.',
             '</system-reminder>',
           ].join('\n'),
@@ -810,7 +845,7 @@ describe('dsh-tool-skill', () => {
       callId: ToolCallId('c1'),
       name: 'skill',
       arguments: { name: 'project-skill' },
-      agent: { session: { header: { cwd: project } } } as never,
+      agent: agentForCwd(project),
     })
 
     expect(result.isError).toBe(false)
@@ -820,6 +855,8 @@ describe('dsh-tool-skill', () => {
       provider: 'filesystem',
       resourceBase: { kind: 'directory', path: join(project, '.dsh/skills/project-skill') },
       content: 'Project instructions.',
+      contentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      reused: false,
     })
     const block = result.content[0]
     expect(block?.type).toBe('text')

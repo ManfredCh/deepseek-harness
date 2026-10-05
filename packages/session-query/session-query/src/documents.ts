@@ -67,9 +67,10 @@ function classifySurface(events: readonly SessionEvent[]): Map<SessionSeq, Sessi
     )
   }
   const result = new Map<SessionSeq, SessionEventSurface>()
-  for (const seq of folded.nodes) result.set(seq, 'current')
   for (const replacement of folded.replacements) {
     for (const seq of replacement.shadowedSeqs) result.set(seq, 'shadowed')
   }
+  // Checkout can revive an original node that an older compaction shadowed.
+  for (const seq of folded.nodes) result.set(seq, 'current')
   return result
 }

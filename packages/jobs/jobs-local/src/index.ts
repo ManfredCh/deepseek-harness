@@ -11,12 +11,13 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
+import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ScopedLayers, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { JobRegistry, JobId } from '@deepseek-ai/dsh-jobs'
+import { JobRegistry, JobId, JobRegistryId } from '@deepseek-ai/dsh-jobs'
 import type {
   JobAppendOptions, JobEvent, JobEvents, JobHandle, JobKind, JobOutcome, JobOutputRead, JobOutputSource,
   JobRead, JobSettleCause, JobSpec, JobStatus, JobView,
@@ -87,6 +88,8 @@ interface TrackedJob {
   modelCursor: number
   /** Whether the first post-settlement read already handed out `result`. */
   resultDelivered: boolean
+  /** Completion was collected or atomically claimed by a reporter. */
+  reported: boolean
   /** Producer-shared progress line and commit binding. */
   state: ProducerState
   /** Terminal reason; a recorded kill reason is merged in at settlement. */
@@ -158,6 +161,7 @@ export class LocalJobRegistry extends JobRegistry {
   /** Schemastery-defaulted pull-source poll interval. */
   private readonly pumpPollMs: number
   private store = new Map<JobId, TrackedJob>()
+  private readonly registryId = JobRegistryId(randomUUID())
   private counters = new Map<string, number>()
   /**
    * Controllers and scoped subscriptions layered by the scope that registered
@@ -251,6 +255,7 @@ export class LocalJobRegistry extends JobRegistry {
       ring,
       modelCursor: 0,
       resultDelivered: false,
+      reported: false,
       state,
       detail: undefined,
       result: undefined,
@@ -325,8 +330,8 @@ export class LocalJobRegistry extends JobRegistry {
     return job.ring.readFrom(from)
   }
 
-  kill(id: JobId, caller?: SessionId, reason?: string): 'requested' | 'already-finished' {
-    return this.killJob(this.expect(id, caller), reason)
+  kill(id: JobId, caller?: SessionId, reason?: string, collected?: true): 'requested' | 'already-finished' {
+    return this.killJob(this.expect(id, caller), reason, collected)
   }
 
   async wait(id: JobId, timeoutMs: number, caller?: SessionId, signal?: AbortSignal): Promise<JobView> {
@@ -415,6 +420,7 @@ export class LocalJobRegistry extends JobRegistry {
     const spillPaths = [...new Set(job.spillPaths.filter((path): path is string => path !== undefined))]
     return {
       id: job.id,
+      registryId: this.registryId,
       kind: job.kind,
       label: job.label,
       ...owner !== undefined ? { owner } : {},
@@ -446,7 +452,10 @@ export class LocalJobRegistry extends JobRegistry {
     job.modelCursor = job.ring.total
     const result = isTerminal(job.status) && !job.resultDelivered ? job.result : undefined
     if (result !== undefined) job.resultDelivered = true
-    if (isTerminal(job.status)) job.ring.trim(this.settledRetainBytes)
+    if (isTerminal(job.status)) {
+      job.reported = true
+      job.ring.trim(this.settledRetainBytes)
+    }
     return {
       chunks: read.chunks,
       lossy: read.lossy,
@@ -455,11 +464,15 @@ export class LocalJobRegistry extends JobRegistry {
     }
   }
 
-  private killJob(job: TrackedJob, reason?: string): 'requested' | 'already-finished' {
-    if (isTerminal(job.status)) return 'already-finished'
+  private killJob(job: TrackedJob, reason?: string, collected?: true): 'requested' | 'already-finished' {
+    if (isTerminal(job.status)) {
+      if (collected) job.reported = true
+      return 'already-finished'
+    }
     // Cancel first so a throw leaves lifecycle state unchanged.
     job.cancel(reason)
     job.status = 'stopping'
+    if (collected) job.reported = true
     // Last writer wins on purpose: the detail reports the latest kill intent.
     if (reason !== undefined) job.killReason = reason
     job.settleCause = 'kill'
@@ -598,9 +611,17 @@ export class LocalJobRegistry extends JobRegistry {
     job.ring.trim(Math.max(this.settledRetainBytes, job.ring.total - job.modelCursor))
     const waitResolvers = [...job.waitResolvers]
     job.waitResolvers.clear()
+    job.reported ||= waitResolvers.length > 0 || cause === 'teardown'
     for (const resolveWait of waitResolvers) resolveWait()
     job.markSettled()
-    this.emit({ type: 'settled', job: this.view(job), cause, awaited: waitResolvers.length > 0 }, job.owner)
+    this.emit({
+      type: 'settled', job: this.view(job), cause, awaited: waitResolvers.length > 0,
+      claimReport: () => {
+        if (job.reported || this.store.get(job.id) !== job) return false
+        job.reported = true
+        return true
+      },
+    }, job.owner)
     // The ring's stream ends with settlement; the signal follows the committed
     // settlement so an observer that wakes on it reads the terminal state.
     this.emitOutput(job)

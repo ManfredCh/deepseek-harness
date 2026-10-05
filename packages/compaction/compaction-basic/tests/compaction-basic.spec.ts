@@ -24,7 +24,7 @@ import type {
   StreamChunk,
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import SessionStore, { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, SessionSeq, isAppendSurfaceEvent, selectActiveHistoryEvents } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import { agentEvents, type Agent, type RequestErrorAction } from '@deepseek-ai/dsh-agent'
@@ -89,8 +89,10 @@ function createContext(contextWindow = 1_000): Context {
   return ctx
 }
 
-function agent(session: Session, model?: string): Agent {
+function agent(session: Session, model?: string, ctx = new Context()): Agent {
   return {
+    ctx,
+    id: session.id,
     session,
     options: model === undefined ? {} : { provider: model, model },
   } as Agent
@@ -781,6 +783,46 @@ describe('pressure measurement and retention', () => {
     expect(compact.calls[0]!.input.messages.filter(message => message.role === 'system')).toHaveLength(1)
   })
 
+  it('compacts the checked-out surface while retaining selected append-origin human history', async () => {
+    const ctx = createContext(), compact = service(compactConfig, ctx)
+    const session = conversation(5, undefined, 'CHECKOUT HEAD')
+    session.append('turn/end', { turn: 6, reason: { kind: 'completed' } })
+    const original = session.snapshotEvents(), target = original.find(event => event.type === 'turn/end' && event.data.turn === 3)!
+    const expectedHuman = original.filter(event => event.seq <= target.seq && isAppendSurfaceEvent(event)).map(event => event.seq)
+    ctx.tokenMeter.measure(session)
+    session.checkout(target.seq)
+    session.append('turn/start', { turn: 7 })
+    const before = session.snapshotEvents(), head = session.surface.nodes[0]
+    const result = await compactIfNeeded(compact, session)
+    expect(result).not.toBeNull()
+    expect(result?.shadowedSeqs.every(seq => seq <= target.seq)).toBe(true)
+    expect(result?.shadowedSeqs).not.toContain(head)
+    expect(ctx.tokenMeter.measure(session).nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(selectActiveHistoryEvents(session.snapshotEvents()).filter(isAppendSurfaceEvent).map(event => event.seq)).toEqual(expectedHuman)
+    expect(session.snapshotEvents().slice(0, before.length)).toEqual(before)
+  })
+
+  it('compacts queued history after a late first system without shadowing the protected head', async () => {
+    const ctx = createContext()
+    const compact = service(compactConfig, ctx)
+    const session = conversation(4)
+    const firstUser = session.surface.nodes[0]!
+    ctx.tokenMeter.measure(session)
+    const head = session.append('system/message', { turn: 5, step: 1, message: createSystemMessage('LATE SYSTEM HEAD') }, { surfaceOp: 'append' }).seq
+    const before = session.snapshotEvents()
+    const measured = ctx.tokenMeter.measure(session)
+    expect(measured.nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(selectCompactableRange(session, measured, compactConfig.retainTokens!)?.start).toBe(firstUser)
+    const result = await compactIfNeeded(compact, session)
+    expect(result).not.toBeNull()
+    expect(result?.shadowedSeqs).not.toContain(head)
+    expect(session.surface.nodes[0]).toBe(head)
+    expect(compact.calls[0]!.input.messages[0]).toEqual(session.deriveEventMessage(session.eventAt(head)!))
+    expect(compact.calls[0]!.input.messages.filter(message => message.role === 'system')).toHaveLength(1)
+    expect(ctx.tokenMeter.measure(session).nodes.map(node => node.seq)).toEqual(session.surface.nodes)
+    expect(session.snapshotEvents().slice(0, before.length)).toEqual(before)
+  })
+
   it('declines when only the system head precedes the retained tail', () => {
     const ctx = createContext()
     const session = conversation(1, undefined, 'SYSTEM HEAD')
@@ -1384,6 +1426,39 @@ async function summarizerHarness(
 }
 
 describe('default one-shot summarizer', () => {
+  it('projects only the logged system head while preserving developer and V4 tool messages verbatim', async () => {
+    const { ctx, adapter, compact } = await summarizerHarness([{ type: 'text', text: 'summary' }])
+    const session = conversation(1)
+    session.append('system/message', { turn: 2, step: 1, message: createSystemMessage('LOGGED CURRENT HEAD') }, { surfaceOp: 'append' })
+    const system = createSystemMessage('OLD PREFIX HEAD')
+    const developer = createMessage({ role: 'developer', source: { kind: 'test' }, content: [{ type: 'text', text: 'Exact developer context' }] })
+    const tool = createToolResultMessage({ callId: ToolCallId('projection-result'), content: [{ type: 'text', text: 'Exact tool result' }], isError: false })
+    const contextSeen = vi.fn()
+    const seam = vi.spyOn(ctx.llm, 'stream')
+    ctx.provide('modelMessageProjection', { project: (messages, context) => {
+      contextSeen(context)
+      return messages.map(message => message.role === 'system' ? { ...message, content: [{ type: 'text', text: context.systemText! }] } : message)
+    } })
+    await compact.runSummarize({ messages: [system, developer, tool] }, agent(session, MODEL, ctx))
+    expect(contextSeen).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.id, purpose: 'compaction', systemText: 'LOGGED CURRENT HEAD' }))
+    expect(seam.mock.calls[0]?.[0].messages.slice(0, -1)).toEqual([{ ...system, content: [{ type: 'text', text: 'LOGGED CURRENT HEAD' }] }, developer, tool])
+    expect(seam.mock.calls[0]?.[0].toolHistory).toEqual(session.toolHistory())
+    expect(adapter.lastOptions?.messages.some(message => message.role === 'tool')).toBe(true)
+    seam.mockRestore()
+    await ctx.fiber.dispose()
+  })
+
+  it.each(['developer', 'tool'] as const)('rejects an auxiliary projection changing the protected %s message before streaming', async (role) => {
+    const { ctx, adapter, compact } = await summarizerHarness([{ type: 'text', text: 'summary' }])
+    const message = role === 'developer'
+      ? createMessage({ role, source: { kind: 'test' }, content: [{ type: 'text', text: 'Exact developer context' }] })
+      : createToolResultMessage({ callId: ToolCallId('projection-result'), content: [{ type: 'text', text: 'Exact tool result' }], isError: false })
+    ctx.provide('modelMessageProjection', { project: messages => messages.map(value => ({ ...value, content: [{ type: 'text', text: 'tampered' }] })) })
+    await expect(compact.runSummarize({ messages: [message] }, agent(conversation(1), MODEL, ctx))).rejects.toThrow('compaction projection changed protected message')
+    expect(adapter.lastOptions).toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
   it.each([undefined, '', 'SYSTEM HEAD\n精确前缀\n'])('preserves the routed prefix through region summarization with system %j', async (system) => {
     const { adapter, compact } = await summarizerHarness([{ type: 'text', text: 'summary' }])
     const session = conversation(3, undefined, system)
@@ -1491,8 +1566,10 @@ describe('default one-shot summarizer', () => {
     expect(messages.slice(0, -1)).toEqual([system, prefix])
     const last = messages.at(-1)?.content[0]
     const lastText = last?.type === 'text' ? last.text : ''
-    expect(lastText).toContain('Write concise English engineering prose.')
-    expect(lastText).toContain('numeric values, function signatures, and syntax fragments.')
+    expect(lastText).toContain("Use the user's language.")
+    expect(lastText).not.toContain('AI coding assistant')
+    expect(lastText).toContain('resource versions, numeric values, interfaces, source and budget constraints.')
+    expect(lastText).toContain('Distinguish authorization from facts and generated suggestions.')
     expect(lastText).toContain('## Primary Request and Intent')
   })
 

@@ -3,8 +3,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Deque } from '@deepseek-ai/dsh-deque'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
+import type { AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import {
   isAppendSurfaceEvent,
+  selectActiveHistoryEvents,
   SessionLogOffset,
   SessionSeq,
 } from '@deepseek-ai/dsh-session'
@@ -21,6 +23,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {
   SessionAddress,
+  SessionAssistantStreamBaseline,
   SessionAssistantStreamFrame,
   SessionEventEntry,
   SessionFollowRequest,
@@ -31,9 +34,9 @@ import type {
   SessionProjectionBaseline,
   SessionProjectionValues,
   SessionWireHeader,
-  SessionWireEvent,
 } from './types.ts'
 import { SessionAssistantStreamAccumulator } from './assistant-stream.ts'
+import { sessionOutboundProjection } from './outbound-projection.ts'
 
 const DEFAULT_MAX_MESSAGES = 50
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
@@ -42,6 +45,7 @@ const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
 export class SessionHistoryController {
   private readonly closeFollowers = new Set<() => void>()
   private readonly assistantStreams = new Map<SessionId, SessionAssistantStreamAccumulator>()
+  private readonly outbound: ReturnType<typeof sessionOutboundProjection>
 
   /**
    * @param ctx - Host context carrying Session query and projection services.
@@ -51,6 +55,7 @@ export class SessionHistoryController {
     private readonly ctx: Context,
     private readonly promote: (observation: SessionObservation) => void,
   ) {
+    this.outbound = sessionOutboundProjection(ctx)
     ctx.on('agent/assistant-stream', ({ agent, frame }) => {
       let stream = this.assistantStreams.get(agent.session.id)
       if (stream === undefined) {
@@ -104,7 +109,7 @@ export class SessionHistoryController {
       throughSeq,
       request.turnWindow,
     )
-    const records = pageRecords(page.events)
+    const records = pageRecords(page.events, this.outbound)
     return {
       records,
       hasMore: page.hasMore,
@@ -125,7 +130,8 @@ export class SessionHistoryController {
       | { readonly type: 'event'; readonly event: SessionEvent }
       | {
         readonly type: 'assistant-stream'
-        readonly frame: SessionAssistantStreamFrame
+        readonly frame: AssistantStreamFrame
+        readonly durableCursor: SessionSeqCursor
         readonly ordinal: number
       }
     >()
@@ -153,7 +159,6 @@ export class SessionHistoryController {
       // Constructor seed events have no session/event notification. Normally
       // only the end-seed suffix is new; if persistence advanced after the
       // opening observation, replay everything beyond that snapshot cursor.
-      // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
       const suffix = session.snapshotEvents(snapshotCursor === undefined
         ? session.firstLiveSeq
         : SessionLogOffset(snapshotCursor + 1))
@@ -168,7 +173,8 @@ export class SessionHistoryController {
         if (agent.session.id !== target) return
         buffered.pushBack({
           type: 'assistant-stream',
-          frame: wireAssistantStreamFrame(frame, cursorBeforeNext(agent.session.seq)),
+          frame,
+          durableCursor: cursorBeforeNext(agent.session.seq),
           ordinal: ++assistantStreamOrdinal,
         })
         notify()
@@ -194,12 +200,12 @@ export class SessionHistoryController {
         type: 'snapshot',
         header: wireHeader(source.header),
         cursor,
-        records: pageRecords(page.events),
+        records: pageRecords(page.events, this.outbound),
         hasMore: page.hasMore,
         projections: source.projections === undefined
           ? { asOfSeq: cursor, values: {} }
           : projectionBlock(source.projections),
-        ...assistantStream === undefined ? {} : { assistantStream },
+        ...assistantStream === undefined ? {} : { assistantStream: outboundStreamBaseline(assistantStream, this.outbound) },
       }
       if (address.kind === 'session' && source.source === 'prepared') {
         const promotion = source.retain()
@@ -219,7 +225,7 @@ export class SessionHistoryController {
         }
         if (item.type === 'assistant-stream') {
           if (item.ordinal > assistantStreamOrdinalCut) {
-            yield { type: 'assistant-stream', frame: item.frame }
+            yield { type: 'assistant-stream', frame: wireAssistantStreamFrame(item.frame, item.durableCursor, this.outbound) }
           }
           continue
         }
@@ -229,7 +235,7 @@ export class SessionHistoryController {
           throw new RemoteError('gateway/internal', `session event stream skipped seq ${String(expectedSeq)}`, {})
         }
         nextOffset = SessionLogOffset(nextOffset + 1)
-        yield entryFor(item.event)
+        yield entryFor(item.event, this.outbound)
       }
     } finally {
       this.closeFollowers.delete(close)
@@ -280,15 +286,29 @@ function cursorBeforeNext(nextSeq: SessionLogOffsetType): SessionSeqCursor {
   return nextSeq === 0 ? -1 : SessionSeq(nextSeq - 1)
 }
 
+/** Apply the current consumer only to detached stream records, preserving reconnect identity. */
+function outboundStreamBaseline(
+  baseline: SessionAssistantStreamBaseline,
+  outbound: ReturnType<typeof sessionOutboundProjection>,
+): SessionAssistantStreamBaseline {
+  const attempt = baseline.activeAttempt
+  if (attempt === undefined) return baseline
+  return { ...baseline, activeAttempt: {
+    ...attempt,
+    stream: outbound.stream(attempt.stream as readonly AssistantStreamRecord[]) as readonly JsonValue[],
+  } }
+}
+
 function wireAssistantStreamFrame(
   frame: AssistantStreamFrame,
   durableCursor: SessionSeqCursor,
+  outbound: ReturnType<typeof sessionOutboundProjection>,
 ): SessionAssistantStreamFrame {
   if (frame.type === 'start') return { ...frame, startedAfterSeq: durableCursor }
   if (frame.type === 'end') return frame
   return {
     ...frame,
-    chunk: frame.chunk as JsonValue,
+    chunk: outbound.block(frame.chunk) as JsonValue,
   }
 }
 
@@ -400,12 +420,17 @@ function paginate(
   let count = 0
   let turns = 0
   let cut = SessionLogOffset(0)
-  for (let index = end - 1; index >= 0; index--) {
-    const event = events[index] as SessionEvent
+  // Count the active conversation at the caller's fixed observation cursor.
+  // Keep the returned records contiguous and raw: the later checkout marker
+  // remains available to Clients when older pages join their current window.
+  const active = selectActiveHistoryEvents(events.slice(0, throughSeq + 1))
+  for (let index = active.length - 1; index >= 0; index--) {
+    const event = active[index] as SessionEvent
+    if (event.seq >= end) continue
     if (turnWindow !== undefined && event.type === 'turn/start') {
       turns++
       if (count >= turnWindow.minMessages && turns >= turnWindow.minTurns) {
-        cut = SessionLogOffset(index)
+        cut = SessionLogOffset(event.seq)
         break
       }
     }
@@ -431,15 +456,15 @@ function wireHeader(header: SessionHeader): SessionWireHeader {
   return { ...header }
 }
 
-function entryFor(event: SessionEvent): SessionEventEntry {
+function entryFor(event: SessionEvent, outbound: ReturnType<typeof sessionOutboundProjection>): SessionEventEntry {
   return {
     type: 'event',
-    // Session.append validates and freezes event data as JSON before publication.
-    event: event as unknown as SessionWireEvent,
+    // The consumer changes only a detached browser copy, never the native log or cursor.
+    event: outbound.event(event),
   }
 }
 
 /** Encode one bounded logical page without changing its pagination cut. */
-function pageRecords(events: readonly SessionEvent[]): SessionHistoryRecord[] {
-  return events.map(entryFor)
+function pageRecords(events: readonly SessionEvent[], outbound: ReturnType<typeof sessionOutboundProjection>): SessionHistoryRecord[] {
+  return events.map(event => entryFor(event, outbound))
 }

@@ -281,6 +281,9 @@ export class ApiSessionAgentController {
    * @returns the installed mutable selection reference.
    */
   selectionFor(agent: Agent): InstalledSelection {
+    if (this.ctx.agentDefaultModel.optionalSelection() === undefined) {
+      throw new Error('MODEL_NOT_CONFIGURED: this composition permits manual Sessions only')
+    }
     const installed = this.selections.get(agent)
     if (installed !== undefined) return installed
     const projectionState = this.ctx.sessionProjections.stateOf(agent.session, 'modelSelection')
@@ -495,11 +498,12 @@ export class ApiSessionAgentController {
   }
 
   private agentOptions(): AgentOptions {
-    const { provider, model } = this.ctx.agentDefaultModel.currentSelection()
-    return { provider, model }
+    const selected = this.ctx.agentDefaultModel.optionalSelection()
+    return selected === undefined ? {} : { provider: selected.provider, model: selected.model }
   }
 
   private installSelection(agent: Agent): void {
+    if (this.ctx.agentDefaultModel.optionalSelection() === undefined) return
     this.selectionFor(agent)
   }
 

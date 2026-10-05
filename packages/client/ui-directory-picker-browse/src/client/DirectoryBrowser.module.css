@@ -432,3 +432,9 @@
   gap: 8px;
   margin-top: 8px;
 }
+.absolutePath {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+}

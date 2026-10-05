@@ -38,7 +38,7 @@ function readBack(ctx: Context, id: JobId, owner: JobView['owner']): JobView | u
  */
 function checkAnnounced(read: JobView, announced: JobView, what: string, fail: InvariantFailure): void {
   const id = String(announced.id)
-  for (const key of ['kind', 'label', 'owner', 'startedAt'] as const) {
+  for (const key of ['registryId', 'kind', 'label', 'owner', 'startedAt'] as const) {
     if (read[key] !== announced[key]) {
       fail(`${what} for job ${id} announces ${key} ${JSON.stringify(announced[key])} while the registry reads ${JSON.stringify(read[key])}`)
     }

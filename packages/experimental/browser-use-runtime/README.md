@@ -45,7 +45,7 @@ Browser tools and resource requests targeting this server use the same queue and
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The [resource manager](src/index.ts) keys ownership by live Agent identity and joins operation cancellation with owner disposal. Each resource has one acquisition promise and one operation queue. Failed acquisition releases its reservation only after the provider callback rolls back acquired resources.
+The [resource manager](src/index.ts) keys ownership by live Agent identity and joins operation cancellation with owner disposal. Each resource has one acquisition promise and one operation queue. A provider that cannot confirm initial rollback returns its partial resource with `acquisitionError`; acquisition and operations still fail with the original cause, while the reservation remains held until verified cleanup. The MCP helper checks both its connection owner's disposal outcome and its browser-root release observation before releasing ownership.
 
 Disposed-cause cancellation starts resource cleanup before AgentHandle waits for idle. Cleanup closes resources before waiting for running operations, allowing connection teardown to interrupt upstream APIs without abort support. A failed close rejects disposal and retains ownership. Agent-scoped cleanup prevents a resumed Session with the same durable id from inheriting a previous browser.
 

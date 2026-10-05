@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import * as AgentLoopInvariant from '@deepseek-ai/dsh-agent-loop/invariant'
-import { createUserMessage, markAgentLoopRequest, type GenerateOptions  } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, markAgentLoopRequest, type GenerateOptions, type RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -24,9 +24,16 @@ function dispatch(ctx: Context, options: unknown): void {
   void ctx.waterfall('llm/stream', options as never, () => (async function* () {})() as never)
 }
 
-function loopRequest<T extends object>(options: T): Readonly<T> {
-  markAgentLoopRequest(options as GenerateOptions)
-  return Object.freeze(options)
+type LoopFixtureOptions = Omit<GenerateOptions, 'provider' | 'messages'> & {
+  provider?: string
+  messages: readonly RequestMessage[]
+}
+
+function loopRequest(options: LoopFixtureOptions): Readonly<GenerateOptions> {
+  const messages = [...options.messages]
+  if (Object.isFrozen(options.messages)) Object.freeze(messages)
+  const complete: GenerateOptions = { provider: 'mock', toolHistory: { tools: [], updates: [] }, ...options, messages }
+  return Object.freeze(markAgentLoopRequest(complete))
 }
 
 async function requestSetup() {
@@ -75,7 +82,7 @@ describe('request-reconstruction invariant', () => {
 
   it('rejects message and header divergence', async () => {
     const { ctx, session, boundary } = await requestSetup()
-    const divergent = [...boundary, { role: 'user', content: [{ type: 'text', text: 'phantom' }] }]
+    const divergent = [...boundary, { role: 'user' as const, content: [{ type: 'text' as const, text: 'phantom' }] }]
     expect(() => { dispatch(ctx, loopRequest({ model: 'm', messages: Object.freeze(divergent), sessionId: session.id })) })
       .toThrow(/diverges from the dispatch-time durable derivation/)
     expect(() => { dispatch(ctx, loopRequest({ model: 'other', messages: Object.freeze(boundary), sessionId: session.id })) })
@@ -144,7 +151,7 @@ describe('request-reconstruction invariant', () => {
     session.append('request/header', { header: { config: { provider: 'mock', model: 'm' } }, reason: 'initial' })
     const divergent = loopRequest({
       model: 'm',
-      messages: Object.freeze([{ role: 'user', content: [{ type: 'text', text: 'phantom' }] }]),
+      messages: Object.freeze([{ role: 'user' as const, content: [{ type: 'text' as const, text: 'phantom' }] }]),
       sessionId: session.id,
     })
     expect(() => { dispatch(ctx, divergent) }).toThrow(/diverges from the dispatch-time durable derivation/)

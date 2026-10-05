@@ -18,6 +18,18 @@ import type { Branded } from '@deepseek-ai/dsh-brand'
  */
 export type JobId = Branded<'JobId'>
 
+/** Identifies one registry lifecycle; a repeated job id in another lifecycle names different work. */
+export type JobRegistryId = Branded<'JobRegistryId'>
+
+/**
+ * Brand a registry-issued lifecycle id.
+ * @param id - the provider's opaque lifecycle id.
+ * @returns the same string, branded; no validation is performed.
+ */
+export function JobRegistryId(id: string): JobRegistryId {
+  return id as JobRegistryId
+}
+
 /**
  * Brand a string as a {@link JobId}.
  * @param id - the raw job-id string (the registry generates `<kind>-N`).

@@ -8,11 +8,43 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
-import type { ContextSnapshotSection, ToolSchema } from '@deepseek-ai/dsh-llm'
+import type { ContextSnapshotSection, Message, ToolSchema } from '@deepseek-ai/dsh-llm'
+
+/** 部署可选的纯模型输入投影；不写 Session、工具结果或领域状态。 */
+export interface ModelMessageProjectionContext {
+  scope?: ScopeKey
+  sessionId?: string
+  purpose?: string
+  /** 已记录的当前系统正文；辅助压缩用于替换旧合成系统头。 */
+  systemText?: string
+}
+
+/** 由部署持有的确定性纯消息投影。 */
+export interface ModelMessageProjection {
+  /**
+   * 从原生日志消息产生同一请求的模型输入。
+   * @param messages - 当前实际可见消息；人工、developer、tool 与二进制内容必须保持。
+   * @param context - 实际 Agent scope、会话及请求用途。
+   * @returns 同一消息身份的确定性投影。
+   */
+  project(messages: readonly Message[], context: ModelMessageProjectionContext): readonly Message[]
+}
+
+/**
+ * 未装配投影时保持原生请求；投影只消费同一份既有消息。
+ * @param ctx - 持有部署投影的实际 Agent Context。
+ * @param messages - 原生当前历史。
+ * @param context - 实际 scope、会话和请求用途。
+ * @returns 已装配投影结果，或同一原生消息数组。
+ */
+export function projectModelMessages(ctx: Context, messages: readonly Message[], context: ModelMessageProjectionContext): readonly Message[] {
+  return ctx.get('modelMessageProjection')?.project(messages, context) ?? messages
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     systemPrompt: SystemPrompt
+    modelMessageProjection: ModelMessageProjection
   }
 
   interface Events {

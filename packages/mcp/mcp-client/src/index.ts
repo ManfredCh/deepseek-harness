@@ -18,14 +18,16 @@ import z from '@deepseek-ai/schemastery'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { DEFAULT_MAX_INSTRUCTION_BYTES, RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
-import type { ReconnectConfig } from './connection.ts'
+import type { ConnectionHandle, ReconnectConfig } from './connection.ts'
 import { registerServerContext } from './server-context.ts'
+import type { McpOAuthConfig } from './oauth.ts'
 // Side-effect type import: declaration-merges `ctx.tools` onto Context.
 import type {} from '@deepseek-ai/dsh-tools'
 
 export { createMcpToolDefinition } from './tools.ts'
 export type { McpResult, McpToolDefinitionOptions } from './tools.ts'
-export type { ReconnectConfig, ResolvedReconnectPolicy } from './connection.ts'
+export type { ConnectionDisposal, ConnectionHandle, ReconnectConfig, ResolvedReconnectPolicy } from './connection.ts'
+export type { McpOAuthConfig, McpOAuthBridgeRequest, OAuthClientProvider, OAuthClientMetadata, OAuthClientInformationMixed, OAuthTokens, OAuthDiscoveryState } from './oauth.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'mcp-client'
@@ -45,6 +47,23 @@ const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
  * duplicates inside one Agent remain mutually exclusive.
  */
 const activeServerNames = new WeakMap<object, Set<string>>()
+
+/**
+ * Live connection handles keyed by the context of their mounted fiber. Cordis
+ * contains effect failures while a fiber unloads, so a consumer that must know
+ * whether the transport actually closed reads {@link connectionHandleOf}
+ * instead of trusting the fiber's disposal promise.
+ */
+const connectionHandles = new WeakMap<Context, ConnectionHandle>()
+
+/**
+ * Read the connection handle owned by one mounted mcp-client instance.
+ * @param ctx - the plugin context of a mounted mcp-client (a fiber's `ctx`).
+ * @returns the handle, or `undefined` when `ctx` is not a live mcp-client context.
+ */
+export function connectionHandleOf(ctx: Context): ConnectionHandle | undefined {
+  return connectionHandles.get(ctx)
+}
 
 // ---- Config ----
 
@@ -79,7 +98,7 @@ export interface StdioConfig {
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
 export interface StreamableHttpConfig {
   /** Selects Streamable HTTP transport. */
-  transport: 'streamable-http'
+  transport: 'streamable-http' | 'sse'
   /**
    * Stable local namespace for this server's model-facing tool names
    * (`mcp__<serverName>__<rawName>`). Must match `[A-Za-z0-9_-]{1,32}` and be
@@ -90,6 +109,8 @@ export interface StreamableHttpConfig {
   url: string
   /** Additional headers attached to MCP requests. */
   headers: Record<string, string>
+  /** Browser authorization through the product's credential adapter. */
+  oauth?: true | McpOAuthConfig
   /** Timeout per tool call or resource request in milliseconds. */
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
@@ -130,10 +151,11 @@ export const Config = z.union([
     reconnect: Reconnect,
   }),
   z.object({
-    transport: z.const('streamable-http'),
+    transport: z.union([z.const('streamable-http'), z.const('sse')]),
     serverName: z.string().required().pattern(SERVER_NAME_PATTERN),
     url: z.string().required(),
     headers: z.dict(String).default({}),
+    oauth: z.union([z.const(true), z.object({ clientId: z.string(), clientSecretEnv: z.string(), scope: z.string(), redirectUri: z.string() })]),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
     maxInstructionBytes: z.number().step(1).min(1).default(DEFAULT_MAX_INSTRUCTION_BYTES),
@@ -179,6 +201,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // loop, and the live tool registrations; disposal stops reconnection,
   // quiesces in-flight work, and unregisters the current generation.
   const connection = startConnection(ctx, config, reconnect)
+  connectionHandles.set(ctx, connection)
   registerServerContext(ctx, config.serverName, connection)
   let stopping: Promise<void> | undefined
   const dispose = (): Promise<void> => stopping ??= connection.dispose()

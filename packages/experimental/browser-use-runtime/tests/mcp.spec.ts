@@ -20,7 +20,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
-import { BrowserMcpConfig, mountSessionMcp, validateBrowserMcpConfig } from '../src/mcp.ts'
+import * as McpClient from '@deepseek-ai/dsh-mcp-client'
+import { BrowserMcpConfig, mountSessionMcp, requireVerifiedRelease, validateBrowserMcpConfig } from '../src/mcp.ts'
 
 const fixture = fileURLToPath(new URL('./mcp-fixture.mjs', import.meta.url))
 const roots: string[] = []
@@ -70,7 +71,7 @@ async function load(exclusive = false, mode?: string, toolCallTimeoutMs?: number
     ['sessions', Sessions], ['agents', Agents], ['loop', AgentLoop], ['projections', Projections],
     ['model', { inject: ['llm'], apply(ctx: Context) { ctx.effect(() => ctx.llm.registerAdapter(['fixture'], model)) } }],
     ['browser', { inject: ['browserUse', 'agents', 'tools', 'systemPrompt'], apply(ctx: Context) {
-      mountSessionMcp(ctx, { name: 'browser-fixture', exclusive, command: process.execPath, args: [fixture, root, ...mode === undefined ? [] : [mode]], ...toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs, env: {} } })
+      mountSessionMcp(ctx, { name: 'browser-fixture', exclusive, command: process.execPath, observeBrowserRoot: true, args: [fixture, root, ...mode === undefined ? [] : [mode]], ...toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs, env: {} } })
     } }],
   ])
   const configPath = join(root, 'cordis.yml')
@@ -114,6 +115,11 @@ function browserState(result: Awaited<ReturnType<typeof resource>>): { counter: 
   expect(result.isError).toBe(false)
   const value = result.value as { contents: { text: string }[] }
   return JSON.parse(value.contents[0]!.text) as { counter: number; pid: number }
+}
+
+/** Flatten one tool result's text for assertions on the provider's own message. */
+function resultText(result: Awaited<ReturnType<typeof execute>>): string {
+  return result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
 function registerIndependentTool(ctx: Context) {
@@ -306,6 +312,135 @@ describe('Session MCP Loader composition', () => {
     await warm(ctx, owner.agent)
     expect((await events(root)).filter(event => event.event === 'initialize')).toHaveLength(1)
     expect((await execute(ctx, owner.agent)).isError).toBe(true)
+  })
+
+  it('releases a closed browser target and starts a fresh session browser on the next operation', async () => {
+    const { ctx, root } = await load(false, 'target-closed')
+    const owner = await ctx.agents.create({ sessionId: SessionId('target-closed') })
+    await warm(ctx, owner.agent)
+    const failed = await execute(ctx, owner.agent)
+    expect(failed.isError).toBe(true)
+    if (!failed.isError) throw new Error('expected a closed-target failure')
+    const text = failed.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    // The provider's own cause survives, and recovery is reported as a pending
+    // rebuild instead of claiming the dead browser was already released.
+    expect(text).toContain('Target closed')
+    expect(text).toContain('Recovery was requested')
+    expect(text).toContain('next browser operation waits for the rebuild and then starts a fresh isolated browser')
+    expect(text).toContain('Read the current page catalog first; previous page handles cannot be reused, and the failed operation was not replayed.')
+    expect(text).not.toMatch(/[\u3400-\u9fff]/u)
+    expect(text).not.toContain('was released')
+    // The dead connection is not reused: the next operation starts a new MCP process.
+    await vi.waitFor(async () => {
+      expect((await events(root)).filter(event => event.event === 'initialize')).toHaveLength(2)
+    })
+    const recovered = await execute(ctx, owner.agent)
+    expect(recovered.isError).toBe(false)
+    expect(recovered.content).toEqual([{ type: 'text', text: 'Visit 1: direct' }])
+    const starts = (await events(root)).filter(event => event.event === 'start')
+    expect(starts.length).toBeGreaterThanOrEqual(2)
+    expect(() => process.kill(starts[0]!.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+  })
+
+  it('bounds automatic rebuilds when every fresh browser target is already closed', async () => {
+    const { ctx, root } = await load(false, 'target-closed-until-healthy')
+    const owner = await ctx.agents.create({ sessionId: SessionId('bounded-rebuild') })
+    await warm(ctx, owner.agent)
+    // Two failures each rebuild; the third spends the budget and stops restarting.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const failed = await execute(ctx, owner.agent)
+      expect(failed.isError).toBe(true)
+      expect(resultText(failed)).toContain('Target closed')
+      expect(resultText(failed)).toContain('starts a fresh isolated browser')
+    }
+    const spent = await execute(ctx, owner.agent)
+    expect(spent.isError).toBe(true)
+    expect(resultText(spent)).toContain('suspended after 3 consecutive failures')
+    expect(resultText(spent)).toContain('Target closed')
+    expect(resultText(spent)).not.toContain('starts a fresh')
+    expect((await events(root)).filter(event => event.event === 'initialize')).toHaveLength(3)
+    // A later call reports the suspended browser instead of mounting a connection.
+    expect(resultText(await execute(ctx, owner.agent))).toContain('suspended after 3 consecutive failures')
+    expect((await events(root)).filter(event => event.event === 'initialize')).toHaveLength(3)
+  })
+
+  it('starts a fresh budget only after a real browser operation succeeds', async () => {
+    const { ctx, root } = await load(false, 'target-closed-until-healthy')
+    const owner = await ctx.agents.create({ sessionId: SessionId('success-restores-budget') })
+    await warm(ctx, owner.agent)
+    expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    // A real visit once the browser is healthy clears the two failures above.
+    await writeFile(join(root, 'healthy'), '')
+    expect((await execute(ctx, owner.agent)).isError).toBe(false)
+    await rm(join(root, 'healthy'))
+    const before = (await events(root)).filter(event => event.event === 'initialize').length
+    // The next failure opens a new budget, so it still rebuilds.
+    expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    await vi.waitFor(async () => {
+      expect((await events(root)).filter(event => event.event === 'initialize').length).toBe(before + 1)
+    })
+  })
+
+  it('does not clear the failure budget for a successful MCP resource read', async () => {
+    const { ctx, root } = await load(false, 'target-closed-until-healthy')
+    await ctx.plugin(McpResources)
+    const owner = await ctx.agents.create({ sessionId: SessionId('metadata-does-not-reset') })
+    await warm(ctx, owner.agent)
+    expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    // The same server still serves resources while its browser target is closed:
+    // transport liveness is not browser health, so the budget must not reset.
+    expect(browserState(await resource(ctx, owner.agent)).counter).toBe(0)
+    const spent = await execute(ctx, owner.agent)
+    expect(resultText(spent)).toContain('suspended after 3 consecutive failures')
+    expect((await events(root)).filter(event => event.event === 'initialize')).toHaveLength(3)
+  })
+
+  it('probes again from a new activation after the budget suspends the browser', async () => {
+    const { ctx, root } = await load(false, 'target-closed-until-healthy')
+    const owner = await ctx.agents.create({ sessionId: SessionId('new-activation-probe') })
+    await warm(ctx, owner.agent)
+    for (let attempt = 0; attempt < 3; attempt += 1) expect((await execute(ctx, owner.agent)).isError).toBe(true)
+    const suspended = await execute(ctx, owner.agent)
+    expect(resultText(suspended)).toContain('suspended')
+    expect(resultText(suspended)).toContain('open or resume this Session as a new activation')
+    // Fixing the browser does not resurrect the suspended activation...
+    await writeFile(join(root, 'healthy'), '')
+    expect(resultText(await execute(ctx, owner.agent))).toContain('suspended')
+    // ...but a new activation starts a fresh budget and probes the configured browser.
+    await owner.dispose()
+    const successor = await ctx.agents.create({ sessionId: SessionId('new-activation-probe') })
+    await warm(ctx, successor.agent)
+    expect((await execute(ctx, successor.agent)).isError).toBe(false)
+  })
+
+  it('ends the held browser work when its Session cancels and leaves another Session browser running', async () => {
+    const { ctx, root } = await load(false, 'hold-call')
+    await ctx.plugin(McpResources)
+    const first = await ctx.agents.create({ sessionId: SessionId('cancel-held-call') })
+    const second = await ctx.agents.create({ sessionId: SessionId('untouched-browser') })
+    await warm(ctx, first.agent)
+    await warm(ctx, second.agent)
+    const initialized = (await events(root)).filter(event => event.event === 'initialize')
+    const firstPid = initialized[0]!.pid
+    const secondPid = initialized[1]!.pid
+    expect(firstPid).not.toBe(secondPid)
+    const controller = new AbortController()
+    const held = ctx.tools.execute({
+      agent: first.agent, name: TOOL, arguments: { label: 'held' },
+      callId: ToolCallId('held'), signal: controller.signal,
+    })
+    await vi.waitFor(async () => {
+      expect((await events(root)).some(event => event.event === 'call' && event.name === 'visit')).toBe(true)
+    })
+    controller.abort(new Error('user stop'))
+    expect((await held).isError).toBe(true)
+    // The canceled call settled only after its owned MCP/browser process was released.
+    expect(() => process.kill(firstPid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+    // ...while the other Session's independently owned browser still answers.
+    expect(() => process.kill(secondPid, 0)).not.toThrow()
+    expect(browserState(await resource(ctx, second.agent)).pid).toBe(secondPid)
   })
 
   it('keeps browser ownership exact when scopes inherit tools and leaves unrelated tools usable', async () => {
@@ -572,5 +707,60 @@ describe('Session MCP Loader composition', () => {
     expect((await warm(ctx, future.agent)).tools.some(tool => tool.name === TOOL)).toBe(true)
     expect((await execute(ctx, existing.agent)).isError).toBe(true)
     expect((await execute(ctx, future.agent)).isError).toBe(false)
+  })
+})
+
+describe('browser connection release verification', () => {
+  it('retains the exclusive reservation and raw startup cause when initial closure is unverified', async () => {
+    const lookup = McpClient.connectionHandleOf
+    const owner = vi.spyOn(McpClient, 'connectionHandleOf').mockImplementation((ctx) => {
+      const handle = lookup(ctx)
+      return handle === undefined ? undefined : { ...handle, disposal: () => ({ closed: false, reason: 'mock initial close is unverified' }) }
+    })
+    try {
+      const { ctx, root, model } = await load(true, 'fail')
+      const failure = await ctx.agents.create({ sessionId: SessionId('failed-unverified') }).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect(failure).toMatchObject({ cause: { message: expect.stringContaining('initial connection') }, errors: [expect.any(Error), expect.objectContaining({ message: expect.stringContaining('mock initial close is unverified') })] })
+      expect(model.requests).toEqual([])
+      const starts = (await events(root)).filter(event => event.event === 'start')
+      expect(starts.length).toBeGreaterThan(0)
+      const successor = await ctx.agents.create({ sessionId: SessionId('unverified-successor') })
+      expect(ctx.tools.schemas(successor.agent)).toEqual([])
+      expect((await events(root)).filter(event => event.event === 'start')).toHaveLength(starts.length)
+      for (const { pid } of starts) expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+      await successor.dispose()
+    } finally {
+      owner.mockRestore()
+    }
+  })
+
+  it('retains the exclusive reservation when initial browser-root release is unverified', async () => {
+    const { BrowserRootObserver } = await import('../src/root-state.ts')
+    const release = vi.spyOn(BrowserRootObserver.prototype, 'verifyRelease').mockRejectedValue(new Error('mock initial browser root release is unverified'))
+    try {
+      const { ctx, root } = await load(true, 'fail')
+      const failure = await ctx.agents.create({ sessionId: SessionId('failed-root-unverified') }).catch((error: unknown) => error)
+      expect(failure).toMatchObject({ cause: { message: expect.stringContaining('initial connection') } })
+      expect(String(failure)).toContain('mock initial browser root release is unverified')
+      const starts = (await events(root)).filter(event => event.event === 'start')
+      const successor = await ctx.agents.create({ sessionId: SessionId('root-unverified-successor') })
+      expect(ctx.tools.schemas(successor.agent)).toEqual([])
+      expect((await events(root)).filter(event => event.event === 'start')).toHaveLength(starts.length)
+      await successor.dispose()
+    } finally {
+      release.mockRestore()
+    }
+  })
+
+  it('accepts only a connection owner outcome that confirmed transport closure', () => {
+    expect(() => requireVerifiedRelease({ closed: true }, 'browser-fixture')).not.toThrow()
+    // Cordis fiber teardown and the MCP connection's own dispose both resolve
+    // even when closure is unconfirmed, so the consumer refuses an unverified
+    // outcome instead of shedding ownership of a possibly live process.
+    expect(() => requireVerifiedRelease(undefined, 'browser-fixture'))
+      .toThrow('recorded no disposal outcome')
+    expect(() => requireVerifiedRelease({ closed: false, reason: 'transport closure could not be confirmed' }, 'browser-fixture'))
+      .toThrow('transport closure could not be confirmed')
   })
 })

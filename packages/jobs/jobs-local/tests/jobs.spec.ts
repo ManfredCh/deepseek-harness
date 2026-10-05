@@ -159,6 +159,30 @@ function scriptedSource(reads: { text: string; lossy?: boolean }[], channel?: 's
 }
 
 describe('LocalJobRegistry.start', () => {
+  it('keeps one registry lifecycle identity across jobs and changes it when a same-named job belongs to a new registry', async () => {
+    const first = await harness()
+    const second = await harness()
+    const jobs = [producer(), producer(), producer()]
+    try {
+      const firstId = first.jobs.start(jobs[0]!.spec)
+      const siblingId = first.jobs.start(jobs[1]!.spec)
+      const secondId = second.jobs.start(jobs[2]!.spec)
+      const firstView = first.jobs.get(firstId)
+      const siblingView = first.jobs.get(siblingId)
+      const secondView = second.jobs.get(secondId)
+      expect(firstId).toBe(secondId)
+      expect(firstView.registryId).toEqual(expect.any(String))
+      expect(siblingView.registryId).toBe(firstView.registryId)
+      expect(first.jobs.list()[0]?.registryId).toBe(firstView.registryId)
+      expect(secondView.registryId).not.toBe(firstView.registryId)
+    } finally {
+      for (const job of jobs) job.settle({ status: 'completed' })
+      await tick()
+      await first.fiber.dispose()
+      await second.fiber.dispose()
+    }
+  })
+
   it('preserves the SessionId brand on public owner projections', () => {
     expectTypeOf<JobView['owner']>().toEqualTypeOf<SessionId | undefined>()
   })
@@ -603,6 +627,88 @@ describe('LocalJobRegistry.wait', () => {
 })
 
 describe('LocalJobRegistry settled event awaited flag', () => {
+  it('leaves the completion uncollected when a collected cancellation throws', async () => {
+    const ctx = await harness()
+    const reports: boolean[] = []
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') reports.push(event.claimReport())
+    })
+    const p = producer({ cancel() { throw new Error('cancel refused') } })
+    const id = ctx.jobs.start(p.spec)
+    expect(() => ctx.jobs.kill(id, undefined, 'model cancelled', true)).toThrow('cancel refused')
+    expect(ctx.jobs.get(id).status).toBe('running')
+    p.settle({ status: 'completed' })
+    await tick()
+    expect(reports).toEqual([true])
+    await ctx.fiber.dispose()
+  })
+
+  it('lets one completion reporter claim the terminal notice while observers leave the consuming cursor intact', async () => {
+    const ctx = await harness()
+    const reports: boolean[] = []
+    const events = collect(ctx, { owners: 'all' }, ['settled'])
+    const p = producer()
+    const id = ctx.jobs.start(p.spec)
+    p.job().append('retained bytes')
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type !== 'settled') return
+      expect(ctx.jobs.readAt(event.job.id, 0).chunks.map(chunk => chunk.text).join('')).toBe('retained bytes')
+    })
+    for (let i = 0; i < 2; i += 1) {
+      ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+        if (event.type === 'settled') reports.push(event.claimReport())
+      })
+    }
+    p.settle({ status: 'completed', result: 'terminal result' })
+    await tick()
+    expect(reports).toEqual([true, false])
+    expect(ctx.jobs.read(id).chunks.map(chunk => chunk.text).join('')).toBe('retained bytes')
+    ctx.jobs.remove(id)
+    const settled = events[0]
+    if (settled?.type !== 'settled') throw new Error('missing settled event')
+    expect(settled.claimReport()).toBe(false)
+    await ctx.fiber.dispose()
+  })
+
+  it('does not offer a second notice after a consuming terminal read in an earlier listener', async () => {
+    const ctx = await harness()
+    const reports: boolean[] = []
+    const p = producer()
+    const id = ctx.jobs.start(p.spec)
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') ctx.jobs.read(event.job.id)
+    })
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') reports.push(event.claimReport())
+    })
+    p.settle({ status: 'completed' })
+    await tick()
+    expect(ctx.jobs.get(id).status).toBe('completed')
+    expect(reports).toEqual([false])
+    await ctx.fiber.dispose()
+  })
+
+  it('refuses reporter claims after awaited completion or registry teardown', async () => {
+    const ctx = new Context()
+    await ctx.plugin(AgentRegistry)
+    const registryFiber = await ctx.plugin(LocalJobRegistry)
+    ctx.jobs.attachController('report-test')
+    const reports: boolean[] = []
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') reports.push(event.claimReport())
+    })
+    const awaited = producer()
+    const awaitedId = ctx.jobs.start(awaited.spec)
+    const waiting = ctx.jobs.wait(awaitedId, 1_000)
+    awaited.settle({ status: 'completed' })
+    expect((await waiting).status).toBe('completed')
+    const teardown = producer({ cancel() { teardown.settle({ status: 'killed' }) } })
+    ctx.jobs.start(teardown.spec)
+    await registryFiber.dispose()
+    expect(reports).toEqual([false, false])
+    await ctx.fiber.dispose()
+  })
+
   it('reports a settlement that released a live wait as awaited', async () => {
     const ctx = await harness()
     const seen = collect(ctx, { owners: 'all' }, ['settled'])

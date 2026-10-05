@@ -53,6 +53,8 @@ export interface Config {
    * orientation text would be false.
    */
   surfaceContext: boolean
+  /** 产品界面使用短事实；普通 DSH 开发部署保留原教程。 */
+  surfacePresentation?: 'developer' | 'product'
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
 }
@@ -61,6 +63,7 @@ export const Config: z<Config> = z.object({
   openBrowser: z.boolean().default(true),
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
+  surfacePresentation: z.union(['developer', 'product']).default('developer'),
   trustedHosts: z.array(String).default([]),
 })
 
@@ -131,8 +134,14 @@ export function resolveLanTrust(bindHost: string, extra: readonly string[]): Web
   return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }
 }
 
-/** Model-visible orientation and acceptance boundary for sessions created through `dsh web`. */
-function webSurfacePrompt(webUrl: string): string {
+/**
+ * Render the composition's model-visible interface orientation.
+ * @param webUrl - current native Web interface address.
+ * @param presentation - developer orientation or explicit product workbench facts.
+ * @returns pure English orientation text.
+ */
+export function webSurfacePrompt(webUrl: string, presentation: 'developer' | 'product' = 'developer'): string {
+  if (presentation === 'product') return 'The current interface is Lyapunov. Resolve references such as "here", "the current scene", or "the selected object" from this session\'s latest workbench facts. An interface acknowledgement does not prove that the displayed image changed; use a real observation from the same window when visual judgement is needed. If no valid window or state is available, report the specific missing information.'
   const updateContract = 'The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while '
     + '`pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. '
     + 'Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. '
@@ -232,11 +241,11 @@ export function apply(ctx: Context, config: Config): void {
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
   if (config.surfaceContext) {
     ctx.inject(['systemPrompt'], (promptCtx) => {
-      addHarnessSourceSection(promptCtx, SOURCE_ROOT)
+      if (config.surfacePresentation !== 'product') addHarnessSourceSection(promptCtx, SOURCE_ROOT)
       promptCtx.systemPrompt.section({
         name: 'app:web-surface',
         order: promptCtx.systemPrompt.getSectionOrder('WEB_SURFACE'),
-        text: () => webSurfacePrompt(localWebUrl(promptCtx)),
+        text: () => webSurfacePrompt(localWebUrl(promptCtx), config.surfacePresentation),
       })
     })
     ctx.inject(['shellEnv'], (runtimeCtx) => {

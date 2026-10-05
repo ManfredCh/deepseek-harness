@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 配置默认值
 
-组合要求提供 provider 和模型。即使没有挂载配置编辑器，消费者也可读取即时引用。
+普通组合要求提供完整的 provider 与模型。显式 `manualOnly: true` 组合始终保持空模型并拒绝获得模型；`initiallyUnconfigured: true` 组合从空模型开始，仅在原生 profile 编辑器成功写入完整显式选择后启用请求，写入失败仍保持空状态。`optionalSelection()` 暴露真实空状态，不虚构路由；`manualOnlyPresentation: guest` 只提供显示信息。即使没有挂载配置编辑器，消费者也可读取即时引用。
 
 ```yaml
 - name: '@deepseek-ai/dsh-agent-default-model'

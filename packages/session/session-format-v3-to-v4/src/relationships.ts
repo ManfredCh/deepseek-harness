@@ -1,5 +1,6 @@
 /** Mandatory native V4 relationships; incomplete tails retain their open transactions. */
 
+import { ProductHistorySurface } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { isDeepStrictEqual } from 'node:util'
 import { SessionFormatError, isSessionFormatJsonObject, sessionFormatCount } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatArtifact, SessionFormatEvent, SessionFormatJsonObject, SessionFormatJsonValue } from '@deepseek-ai/dsh-session-format'
@@ -64,8 +65,10 @@ class Relationships {
   readonly startedRetries = new Set<string>()
   readonly commands = new Set<string>()
   readonly orphanCompactions = new Set<number>()
+  private readonly historySurface: ProductHistorySurface
 
   constructor(readonly artifact: SessionFormatArtifact, readonly knownEventTypes: ReadonlySet<string>) {
+    this.historySurface = new ProductHistorySurface(artifact.events, 4)
     let start: number | undefined
     for (const event of artifact.events) {
       if (!knownEventTypes.has(event.type)) continue
@@ -123,12 +126,11 @@ class Relationships {
 
   foldSurface(event: SessionFormatEvent): void {
     if (!SURFACE_TYPES.has(event.type)) return
-    if (event.type === 'system/message' && this.surface.length > 0 && this.protectedHead === undefined) {
-      throw new SessionFormatError('system/message requires a protected first surface head')
-    }
     if (event['surfaceOp'] === 'append') {
-      if (event.type === 'system/message' && this.surface.length === 0) this.protectedHead = event.seq
-      this.surface.push(event.seq)
+      if (event.type === 'system/message' && this.protectedHead === undefined) {
+        this.protectedHead = event.seq
+        this.surface.unshift(event.seq)
+      } else this.surface.push(event.seq)
       return
     }
     const operation = record(event['surfaceOp'], `${event.type} surfaceOp`)
@@ -264,6 +266,13 @@ class Relationships {
   }
 
   accept(event: SessionFormatEvent): void {
+    this.historySurface.apply(event, this.knownEventTypes.has(event.type))
+    if (event.type === 'session/history-checkout' && this.knownEventTypes.has(event.type)) {
+      this.surface = [...this.historySurface.nodes]
+      const first = this.artifact.events[this.surface[0] ?? -1]
+      this.protectedHead = first?.type === 'system/message' ? first.seq : undefined
+      return
+    }
     if (!this.knownEventTypes.has(event.type) || !RELATIONSHIP_TYPES.has(event.type)) return
     const data = record(event.data, event.type)
     if (STEP_EVENT_TYPES.has(event.type)) this.requireStep(event, data)

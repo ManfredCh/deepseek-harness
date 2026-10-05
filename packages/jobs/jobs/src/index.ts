@@ -14,7 +14,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { installJobArchiveAdmission } from './archive-admission.ts'
 import type { JobEvents, JobId, JobOutputRead, JobRead, JobSpec, JobView } from './types.ts'
 
-export { JobId } from './types.ts'
+export { JobId, JobRegistryId } from './types.ts'
 export type {
   JobAppendOptions,
   JobChannel,
@@ -63,6 +63,8 @@ declare module '@deepseek-ai/cordis' {
  *   The `settled` event follows every released waiter and reports whether it
  *   released one (`awaited`), so a completion reporter can skip settlements a
  *   waiting caller already collected.
+ *   Reporters atomically claim an uncollected terminal notice with
+ *   `event.claimReport()`; observers never claim it or consume output.
  * - A settled record stays listed until its owner's disposal, service
  *   disposal, or an explicit {@link remove} by a caller that collected the
  *   terminal state itself and never handed the id out.
@@ -155,9 +157,10 @@ export abstract class JobRegistry extends Service {
    * @param id - job to cancel.
    * @param caller - killing session checked against the owner.
    * @param reason - cancellation reason forwarded verbatim to the producer.
+   * @param collected - true when the caller delivers this cancellation as its own result, suppressing a repeat completion notice.
    * @returns `requested` for live work, otherwise `already-finished`.
    */
-  abstract kill(id: JobId, caller?: SessionId, reason?: string): 'requested' | 'already-finished'
+  abstract kill(id: JobId, caller?: SessionId, reason?: string, collected?: true): 'requested' | 'already-finished'
 
   /**
    * Wait for settlement or timeout without cancelling the job. Caller abort

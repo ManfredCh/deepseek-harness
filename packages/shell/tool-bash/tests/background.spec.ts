@@ -12,7 +12,7 @@ import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
-import type { JobId } from '@deepseek-ai/dsh-jobs'
+import { JobId } from '@deepseek-ai/dsh-jobs'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
 import type { ShellExecution, ShellProcess } from '@deepseek-ai/dsh-shell'
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
@@ -220,6 +220,12 @@ describe('foreground commands as jobs', () => {
       await vi.advanceTimersByTimeAsync(250)
       const result = await pending
       vi.useRealTimers()
+      expect(result.isError).toBe(false)
+      if (result.isError) throw new Error('expected promoted bash success')
+      const identity = ctx.jobs.get(JobId('bash-1'))
+      expect(result.value).toMatchObject({
+        kind: 'promoted', jobId: identity.id, registryId: identity.registryId, startedAt: identity.startedAt,
+      })
       const body = text(result)
       expect(body).toContain('early-output')
       expect(body).toContain('[still running after 250ms; moved to background job bash-1]')

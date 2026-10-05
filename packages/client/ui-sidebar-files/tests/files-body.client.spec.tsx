@@ -41,7 +41,7 @@ describe('FilesBody', () => {
     expect(script.list).not.toHaveBeenCalled()
   })
 
-  it('lists the root on mount, heads it with its path split at the last segment, and draws directories first with dotfiles kept', async () => {
+  it('lists the root on mount, heads it with its path split at the last segment, and draws directories first with dotfiles hidden until requested', async () => {
     const { view, script } = mountBody()
     expect(script.list).not.toHaveBeenCalled()
     await act(() => script.watches.ready(ROOT))
@@ -52,6 +52,8 @@ describe('FilesBody', () => {
     const path = view.container.querySelector('[data-files-path]')
     expect(path?.getAttribute('title')).toBe(ROOT)
     expect([...path?.firstElementChild?.children ?? []].map(span => span.textContent)).toEqual(['/work/', 'app'])
+    expect(names(view.container)).toEqual([`${ROOT}/src`, `${ROOT}/pipe`, `${ROOT}/README.md`])
+    fireEvent.click(view.getByRole('button', { name: zh.showHidden }))
     expect(names(view.container)).toEqual([`${ROOT}/src`, `${ROOT}/.env`, `${ROOT}/pipe`, `${ROOT}/README.md`])
     const envIcon = view.container.querySelector(`[data-files-path="${ROOT}/.env"] svg`)?.innerHTML
     const readmeIcon = view.container.querySelector(`[data-files-path="${ROOT}/README.md"] svg`)?.innerHTML
@@ -64,7 +66,7 @@ describe('FilesBody', () => {
     await act(() => script.settle({ ok: true, value: ROOT_LEVEL }))
     const path = view.container.querySelector('[data-files-path]')
     expect([...path?.firstElementChild?.children ?? []].map(span => span.textContent)).toEqual(['/'])
-    expect(names(view.container)).toEqual(['/src', '/.env', '/pipe', '/README.md'])
+    expect(names(view.container)).toEqual(['/src', '/pipe', '/README.md'])
   })
 
   it('marks the root path clipped while its text is wider than its box, re-reading on resize', async () => {
@@ -121,7 +123,7 @@ describe('FilesBody', () => {
     const { view, script } = mountBody()
     await act(() => script.watches.ready(ROOT))
     await act(() => script.settle({ ok: true, value: ROOT_LEVEL }))
-    const dir = view.container.querySelector(`[data-files-path="${ROOT}/src"] > button`)!
+    const dir = view.container.querySelector(`[data-files-path="${ROOT}/src"] > div > button:first-child`)!
     act(() => { fireEvent.click(dir) })
     expect(script.list).toHaveBeenCalledTimes(1)
     const childStream = await act(() => script.watches.ready(`${ROOT}/src`))
@@ -163,7 +165,7 @@ describe('FilesBody', () => {
     await act(() => script.watches.ready(ROOT))
     await act(() => script.settle({ ok: true, value: { entries: [{ name: 'd', type: 'directory' }], truncated: true } }))
     expect(view.container.querySelector('[data-files-row="truncated"]')?.textContent).toBe(zh.truncated)
-    act(() => { fireEvent.click(view.container.querySelector(`[data-files-path="${ROOT}/d"] > button`)!) })
+    act(() => { fireEvent.click(view.container.querySelector(`[data-files-path="${ROOT}/d"] button[aria-expanded]`)!) })
     await act(() => script.watches.ready(`${ROOT}/d`))
     await act(() => script.settle({ ok: true, value: { entries: [], truncated: false } }))
     expect(view.container.querySelector('[data-files-row="empty"]')?.textContent).toBe(zh.empty)
@@ -205,7 +207,7 @@ describe('FilesBody', () => {
     const collapsed = `${ROOT}/docs`
     const rootStream = await act(() => script.watches.ready(ROOT))
     await act(() => script.settle({ ok: true, value: ROOT_LEVEL }))
-    act(() => { fireEvent.click(view.container.querySelector(`[data-files-path="${child}"] > button`)!) })
+    act(() => { fireEvent.click(view.container.querySelector(`[data-files-path="${child}"] button[aria-expanded]`)!) })
     await act(() => script.watches.ready(child))
     await act(() => script.settle({ ok: true, value: ROOT_LEVEL }))
     act(() => { instance.actions.loaded(TAB, collapsed, ROOT_LEVEL) })

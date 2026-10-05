@@ -17,8 +17,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { FILES_ID, filesDefinition } from './definition.tsx'
-import { createList, createWatch, filesFace } from './face.ts'
-import { FilesBody } from './FilesBody.tsx'
+import { createEntries, createList, createWatch, filesFace } from './face.ts'
+import { FilesBody, type FilesActionOwner } from './FilesBody.tsx'
 import { FilesTitle } from './FilesTitle.tsx'
 import { en, zh } from './locales.ts'
 import { createFilesStore } from './store.ts'
@@ -34,10 +34,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'sidebar.right.tab.files.actions': {
       kind: 'list'
       scope: 'session'
-      owner: {
-        /** Absolute directory path displayed by the file tree. */
-        readonly absolutePath: string
-      }
+      owner: FilesActionOwner
     }
   }
 }
@@ -82,7 +79,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-sidebar-files: dictionaries')
 
   const store = createFilesStore()
-  const inject = filesFace(createList(ctx.remote), createWatch(ctx.remote))
+  const inject = filesFace(createList(ctx.remote), createWatch(ctx.remote), createEntries(ctx.remote))
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
     {
       name: 'sidebar.right.pane.tab', key: FILES_ID, locale: NS, store, inject,

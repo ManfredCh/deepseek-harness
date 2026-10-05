@@ -37,7 +37,8 @@ export const GenericCommandCard = memo(function GenericCommandCard({ node, t, ru
   const title = node.name ?? t('command.title')
   const state = stateOf(node.outcome)
   const running = state === 'running'
-  const body = text !== undefined && text.includes('\n') ? text : null
+  const history = node.gestureHistory?.map(row => `${row.phase} #${row.sequence}: ${row.outcome?.text ?? t('command.running')}`).join('\n')
+  const body = history ?? (text !== undefined && text.includes('\n') ? text : null)
   const open = expanded && body !== null
   const toggle = useCallback(() => { setExpanded(value => !value) }, [])
   const collapsedContent = useMemo(() => (

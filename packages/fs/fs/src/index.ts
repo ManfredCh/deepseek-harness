@@ -252,6 +252,17 @@ export abstract class FileSystem extends Service {
   abstract listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]>
 
   /**
+   * Create one directory without creating missing parents, using the task policy for text writes.
+   * @param _target - resolved canonical directory target.
+   * @param _signal - cancellation checked before mutation.
+   * @param _sandboxPolicy - task mode and workspace root for a sandboxing backend.
+   * @returns fulfillment after creation, or rejection when this backend cannot create directories.
+   */
+  createDirectory(_target: FsTarget, _signal?: AbortSignal, _sandboxPolicy?: SandboxExecutionPolicy): Promise<void> {
+    return Promise.reject(new FsError('filesystem backend does not support directory creation', 'FS_IO_ERROR'))
+  }
+
+  /**
    * Atomically create or replace UTF-8 text. `expected` guards intent and
    * staleness; omission allows unconditional overwrite.
    * @param target - the resolved target to write.

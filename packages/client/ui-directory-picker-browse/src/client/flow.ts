@@ -41,3 +41,22 @@ export function BrowseDirectoryFlow(props: DirectoryFlowOwnerProps & BrowseFlowI
     onClose: props.onCancel,
   })
 }
+
+/**
+ * Show the existing browser at a file surface's current path with visible ancestry.
+ * @param props - the file surface's picking owner and the native browse calls.
+ * @returns the native directory browser; only confirmation reports a picked path.
+ */
+export function FilesDirectoryFlow(props: DirectoryFlowOwnerProps & BrowseFlowInjected & { initialPath: string }): ReactElement {
+  return createElement(DirectoryBrowser, {
+    open: props.open,
+    busy: props.busy,
+    listDirectory: props.listDirectory,
+    createDirectory: props.createDirectory,
+    initialPath: props.initialPath,
+    fullAncestry: true,
+    t: (key, params) => props.t(key === 'browser.title' ? 'browser.computerTitle' : key === 'browser.open' ? 'browser.workspaceOpen' : key, params),
+    onOpen: props.onPicked,
+    onClose: props.onCancel,
+  })
+}

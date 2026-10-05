@@ -122,6 +122,26 @@ function promptRequest(content: Parameters<SessionCommandController['prompt']>[0
 }
 
 describe('Session file uploads', () => {
+  it('cancels while attachment admission is pending without entering the inbox or consuming the staged receipt', async () => {
+    const { controller, uploads, agent, followup, saveImages } = await uploadHarness()
+    const receipt = await uploads.upload(agent, { data: 'AAAA', name: 'keep.txt' }, new AbortController().signal)
+    const admitted = Promise.withResolvers<readonly ImageAttachmentRef[]>()
+    saveImages.mockReturnValueOnce(admitted.promise)
+    const abort = new AbortController()
+    const prompting = controller.prompt(promptRequest([
+      { type: 'file', receiptId: receipt.receiptId },
+      { type: 'image', mediaType: 'image/png', data: 'AAAA' },
+    ]), abort.signal)
+    await vi.waitFor(() => { expect(saveImages).toHaveBeenCalledOnce() })
+    const failure = expect(prompting).rejects.toThrow('cancel prompt admission')
+    abort.abort(new Error('cancel prompt admission'))
+    admitted.resolve([{ attachmentId: AttachmentId('admitted-image'), mediaType: 'image/png', bytes: 3, width: 1, height: 1 }])
+    await failure
+    expect(followup).not.toHaveBeenCalled()
+    expect(agent.inbox.nextTurn).toEqual([])
+    expect(uploads.resolve(agent, receipt.receiptId)).toEqual(receipt.file)
+  })
+
   it('registers an HTTP route bound to the upload service', async () => {
     const { uploadRoute } = await uploadHarness()
     await expect(uploadRoute(new Request('http://host/upload')))

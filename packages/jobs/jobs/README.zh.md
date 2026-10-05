@@ -56,6 +56,10 @@ kind: "package-reference"
 
 -----
 
+执行关联使用 `JobView.id`、可选的 `registryId` 和 `startedAt`。缺少 `registryId` 的历史记录不能证明与重启后的同名 Job 是同一次执行。终态事件提供 `claimReport()`，由完成通知的发送者原子认领；只读观察者继续使用 `list/get/readAt`，不认领通知，也不推进模型输出游标。
+
+`kill` 的第四个可选 `collected` 参数只在调用者自己交付取消结果时显式传 `true`，成功取消后由同一 Registry 记录通知已交付。模型 `job_kill` 使用该参数，因此多个控制器或工具重载不会补发重复通知；人类或 UI 取消省略它，终态通知仍按原生规则交付。取消抛错不提交该标记。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

@@ -520,13 +520,14 @@ describe('image draft rail', () => {
     sink.mockImplementationOnce(() => new Promise<SubmitOutcome>((resolve) => { settle = resolve }))
     fireEvent.keyDown(textarea, { key: 'Enter' })
     expect(sink).toHaveBeenCalledWith('', ['draft-1'], 'queue', expect.any(AbortSignal))
-    // Optimistic commit: the rail clears at submit, before the admission settles.
-    expect(attachmentOwner(result.slotCalls).attachments).toEqual([])
+    // The native rail stays visible until Host admission ACK.
+    expect(attachmentOwner(result.slotCalls).attachments).toEqual([attachments[0]])
+    expect(textarea.getAttribute('contenteditable')).toBe('false')
     await act(async () => { settle({ kind: 'success' }) })
     expect(attachmentOwner(result.slotCalls).attachments).toEqual([])
   })
 
-  it('returns an image-only draft to the rail when its admission fails', async () => {
+  it('retains an image-only draft in the rail when its admission fails', async () => {
     const file = new File([Uint8Array.of(1)], 'pixel.png', { type: 'image/png' })
     const attachments = [
       { kind: 'image' as const, id: 'draft-1' as DraftAttachmentId, file, previewUrl: 'blob:draft-1' },
@@ -536,7 +537,7 @@ describe('image draft rail', () => {
     let fail!: (outcome: SubmitOutcome) => void
     sink.mockImplementationOnce(() => new Promise<SubmitOutcome>((resolve) => { fail = resolve }))
     fireEvent.keyDown(textarea, { key: 'Enter' })
-    expect(attachmentOwner(result.slotCalls).attachments).toEqual([])
+    expect(attachmentOwner(result.slotCalls).attachments).toEqual([attachments[0]])
     await act(async () => { fail({ kind: 'error', text: '图片发送失败' }) })
     await vi.waitFor(() => {
       expect(attachmentOwner(result.slotCalls).attachments).toEqual([attachments[0]])

@@ -233,8 +233,27 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       // Stop failure is published through Session promptError.
     })
   }
+  const focusInputs = new Map<SessionId, () => void>()
   const stopShortcut = createSnapshotStore<readonly string[]>([])
   ctx.inject(['shortcuts'], (scope) => {
+    scope.effect(() => scope.shortcuts.register({
+      id: 'conversation.input.focus' as ShortcutCommandId, label: () => t('shortcut.focus'), aliases: ['focus input'],
+      defaults: {
+        'desktop:macos': { code: 'KeyL', modifiers: ['control'] },
+        'desktop:windows': { code: 'KeyL', modifiers: ['control'] },
+        'desktop:linux': { code: 'KeyL', modifiers: ['control'] },
+        'web:macos': { code: 'KeyL', modifiers: ['control'] },
+        'web:windows': { code: 'KeyL', modifiers: ['control'] },
+        'web:linux': { code: 'KeyL', modifiers: ['control'] },
+      }, regions: ['page', 'editable'], modals: [],
+      resolve: ({ target }) => {
+        if (target !== null && target.closest('.monaco-editor') !== null) return { status: 'pass' }
+        const main = sessions.list.getSnapshot()
+        const id = main.ids.find(id => (main.byId[id]?.retainedBy.mainView ?? 0) > 0)
+        const focus = id === undefined ? undefined : focusInputs.get(id)
+        return focus === undefined ? { status: 'pass' } : { status: 'handled', run: focus }
+      },
+    }), 'ui-conversation: focus input shortcut')
     const fixedInputs: readonly ShortcutFixedCommand[] = [
       { id: 'fixed.send' as ShortcutCommandId, label: () => t('input.send'), keys: ['Enter'],
         bindings: [{ code: 'Enter', modifiers: [] }], group: 'input' },
@@ -316,6 +335,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' },
       'conversation.input.dock': { kind: 'list', scope: 'session' },
       'conversation.hero.brand.mark': { kind: 'single', scope: 'root' },
+      'conversation.hero.headline': { kind: 'single', scope: 'root' },
       'conversation.hero.workspace': { kind: 'single', scope: 'root' },
       'conversation.hero.agentPreset': { kind: 'single', scope: 'session-maybe' },
     },
@@ -457,6 +477,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       const bridge = hostPathBridge()
       return {
         keyboard: shell,
+        bindFocusShortcut: (focus) => {
+          focusInputs.set(sessionId, focus)
+          return () => { if (focusInputs.get(sessionId) === focus) focusInputs.delete(sessionId) }
+        },
         addFiles: (files, directories = new Set()) => {
           if (sessions.binding(sessionId) === undefined) return t('file.sessionUnavailable')
           if (shell.snapshot.phase === 'adjudicating' || shell.snapshot.phase === 'submitting') {

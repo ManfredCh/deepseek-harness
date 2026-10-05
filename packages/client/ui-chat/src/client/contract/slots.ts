@@ -230,6 +230,8 @@ export interface PerformanceUsageInjected {
 
 /** Business callbacks injected into the Chat view. */
 export interface ChatViewInjected {
+  /** Bind this View's authored-message navigation to the window shortcut owner. */
+  bindMessageNavigation?: (navigate: (direction: -1 | 1) => void) => () => void
   hooks: {
     /** Live presentation policy derived from the accepted work-details mode. */
     presentation: ObservableSnapshot<ChatPresentationPolicy>

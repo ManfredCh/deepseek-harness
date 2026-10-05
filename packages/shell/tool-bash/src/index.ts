@@ -205,6 +205,8 @@ interface StartedJob {
 const BACKGROUND_OUTPUT_PROPERTIES = {
   kind: { type: 'string', required: true, const: 'background' },
   jobId: { type: 'string', required: true },
+  registryId: { type: 'string' },
+  startedAt: { type: 'integer', required: true },
 } as const
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -351,6 +353,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         return {
           kind: 'promoted' as const,
           jobId: attached.id,
+          startedAt: read.job.startedAt,
+          ...read.job.registryId !== undefined ? { registryId: read.job.registryId } : {},
           timeoutMs,
           output: renderJobRead(
             ringDelta(read.chunks), read.lossy, read.job.output.spillPaths ?? [], attached.process()?.sandbox, escalationModes,
@@ -419,6 +423,8 @@ export function apply(ctx: Context, config: Config = {}): void {
               properties: {
                 kind: { type: 'string', required: true, const: 'promoted' },
                 jobId: { type: 'string', required: true },
+                registryId: { type: 'string' },
+                startedAt: { type: 'integer', required: true },
                 timeoutMs: { type: 'number', required: true },
                 output: { type: 'string', required: true },
               },
@@ -506,7 +512,12 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
           // The caller owns cancellation until ctx.jobs commits detached ownership.
           if (exec.signal.aborted) throw toolAborted()
-          return { kind: 'background' as const, jobId: startJob(jobs, args, exec, ctx.shell.resolve({ ...request, onExpiry: 'none' })).id }
+          const attached = startJob(jobs, args, exec, ctx.shell.resolve({ ...request, onExpiry: 'none' }))
+          const job = jobs.get(attached.id, exec.agent?.id)
+          return {
+            kind: 'background' as const, jobId: attached.id, startedAt: job.startedAt,
+            ...job.registryId !== undefined ? { registryId: job.registryId } : {},
+          }
         }
         // A foreground call is a job the tool waits on, so the command is
         // visible and killable from the moment it starts and outlives the wait

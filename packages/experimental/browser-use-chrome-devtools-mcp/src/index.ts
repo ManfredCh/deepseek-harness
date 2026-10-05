@@ -24,7 +24,7 @@ export const Config: typeof BrowserMcpConfig = BrowserMcpConfig
  */
 export function apply(ctx: Context, config: Config): void {
   validateBrowserMcpConfig(config)
-  const cli = fileURLToPath(import.meta.resolve('chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js'))
+  const cli = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-experimental-browser-use-chrome-devtools-mcp/owner-server'))
   const args = [cli, '--no-usage-statistics']
   if (config.mode === 'attach') {
     args.push(/^wss?:/u.test(config.endpoint) ? '--ws-endpoint' : '--browser-url', config.endpoint)
@@ -37,6 +37,7 @@ export function apply(ctx: Context, config: Config): void {
     exclusive: config.mode === 'attach',
     command: process.execPath,
     args,
+    observeBrowserRoot: true,
     ...config.toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs: config.toolCallTimeoutMs },
   })
 }

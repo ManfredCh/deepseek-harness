@@ -8,7 +8,7 @@ import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import { apply, inject } from '../src/client/index.ts'
-import { BrowseDirectoryFlow } from '../src/client/flow.ts'
+import { BrowseDirectoryFlow, FilesDirectoryFlow } from '../src/client/flow.ts'
 import { apply as nodeApply } from '../src/index.ts'
 
 // The service reads its initial locale from the browser; these specs assert
@@ -17,7 +17,7 @@ usePinnedBrowserLanguages('zh-CN')
 
 afterEach(cleanup)
 
-const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow'] as const
+const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow', 'sidebar.right.tab.files.directoryFlow'] as const
 
 const HOME = '/home/u'
 const homeListing: DirectoryListing = {
@@ -38,7 +38,7 @@ async function bench() {
   const slots = ctx.get('slots') as SlotRegistry
   const declare = () => slots.register({
     name: 'root',
-    children: Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: 'root' }])),
+    children: Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: name === 'sidebar.right.tab.files.directoryFlow' ? 'scoped' : 'root' }])),
   } as never, () => null)
   return { ctx, slots, listDirectory, createDirectory, declare }
 }
@@ -56,7 +56,7 @@ describe('directory-picker-browse client half', () => {
     expect(inject).toEqual(['slots', 'uiWorkspace', 'locale'])
   })
 
-  it('fills both directory-flow holes for declarations before or after apply, and leaves with its fiber', async () => {
+  it('fills workspace and file directory-flow holes before or after apply, and leaves with its fiber', async () => {
     const before = await bench()
     before.declare()
     const fiber = before.ctx.plugin({ inject: [...inject], apply })
@@ -220,6 +220,21 @@ describe('directory-picker-browse client half', () => {
       />,
     )
     expect(view.container.innerHTML).toBe('')
+  })
+
+  it('browses from the Files path and adopts only on an explicit workspace confirmation', async () => {
+    const props = owner()
+    const listDirectory = vi.fn(async () => homeListing)
+    render(<FilesDirectoryFlow {...props} initialPath={HOME} listDirectory={listDirectory}
+      createDirectory={vi.fn(async () => '')} t={key => key} />)
+    const openButton = screen.getByRole<HTMLButtonElement>('button', { name: 'browser.workspaceOpen' })
+    await waitFor(() => { expect(openButton.disabled).toBe(false) })
+    expect(listDirectory).toHaveBeenCalledWith(HOME, expect.any(AbortSignal))
+    expect(screen.getByRole('dialog', { name: 'browser.computerTitle' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '/' })).toBeTruthy()
+    expect(props.onPicked).not.toHaveBeenCalled()
+    fireEvent.click(openButton)
+    expect(props.onPicked).toHaveBeenCalledWith(HOME)
   })
 })
 

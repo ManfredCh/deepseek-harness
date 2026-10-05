@@ -32,6 +32,9 @@ export const zh = {
   'search.clear': '清除搜索',
   'search.empty': '没有匹配的模型。',
   'empty.models': '没有可用的模型。',
+  'blocked.composer': '当前模型不可用，请先选择模型。',
+  'blocked.guest': '游客模式未配置模型，可手动使用文件和场景。',
+  'blocked.unconfigured': '未配置模型，可手动使用文件和场景。',
   'empty.efforts': '当前模型未提供推理等级。',
 } satisfies Record<string, string>
 
@@ -62,5 +65,8 @@ export const en = {
   'search.clear': 'Clear search',
   'search.empty': 'No matching models.',
   'empty.models': 'No models available.',
+  'blocked.composer': 'This model is unavailable. Select one to continue.',
+  'blocked.guest': 'Guest mode has no model configured. You can use files and scenes manually.',
+  'blocked.unconfigured': 'No model is configured. You can use files and scenes manually.',
   'empty.efforts': 'This model provides no reasoning effort levels.',
 } satisfies Record<ModelKey, string>

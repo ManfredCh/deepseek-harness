@@ -120,6 +120,8 @@ const { asOfSeq, values } = ctx.sessionProjections.snapshot(session)
 
 无；投影从不组装或发送提供方请求。
 
+产品历史 checkout 的 `ProjectionDefinition.apply(state, event, checkoutHistory?)` 第三参数提供从 seq 0 到当前 checkout 的完整深冻结原始前缀；普通事件不提供该参数。完整构建、恢复、hydrate、增量 advance 和实时 drive 使用相同前缀规则。仅提供 detached tail 的缓存恢复遇到 checkout 时拒绝并要求从 seq 0 重读，不能用截断前缀替代原引用坐标。新增第三参数保持旧二参数投影可调用；理解 checkout 的消费者必须失效旧状态缓存并重新折叠。
+
 ## 已知限制与延期工作
 
 <a id="known-limitations-and-deferred-work"></a>

@@ -57,7 +57,9 @@ async function fakeAgent(ctx: Context, sessionId: string, delivery: FakeDelivery
     status: delivery.status ?? 'running',
     session: { id, header: { version: 0, id, createdAt: 0 } },
   } as unknown as Agent
-  agentRegistryDisposers.set(agent, await ctx.agents.register(agent))
+  const agents = ctx.get('agents')
+  if (agents === undefined) throw new Error('missing test agent registry')
+  agentRegistryDisposers.set(agent, await agents.register(agent))
   agentScopeFibers.set(agent, scopeFiber)
   return agent
 }
@@ -283,6 +285,61 @@ describe('tool-jobs setup', () => {
 })
 
 describe('job_output', () => {
+  it('rejects an old registry identity before waiting, consuming output, or cancelling', async () => {
+    const { ctx } = await setup()
+    const p = producer()
+    const id = ctx.jobs.start(p.spec)
+    p.append('current output')
+    const read = vi.spyOn(ctx.jobs, 'read')
+    const wait = vi.spyOn(ctx.jobs, 'wait')
+    const kill = vi.spyOn(ctx.jobs, 'kill')
+    try {
+      for (const tool of ['job_output', 'job_kill']) {
+        const result = await call(ctx, tool, { job_id: id, registry_id: 'old-registry', wait: true })
+        expect(result.isError).toBe(true)
+        if (result.isError) expect(result.error.info?.code).toBe('JOB_INSTANCE_MISMATCH')
+      }
+      expect(read).not.toHaveBeenCalled()
+      expect(wait).not.toHaveBeenCalled()
+      expect(kill).not.toHaveBeenCalled()
+      expect(p.cancels).toEqual([])
+      const registryId = ctx.jobs.get(id).registryId
+      expect(registryId).toEqual(expect.any(String))
+      const result = await call(ctx, 'job_output', { job_id: id, registry_id: registryId })
+      expect(result.isError).toBe(false)
+      expect(text(result)).toBe('current output\n[status: running]')
+      expect(read).toHaveBeenCalledTimes(1)
+    } finally {
+      p.settle({ status: 'completed' })
+      await tick()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('rejects another session even with the current registry identity, preserving the owner output', async () => {
+    const { ctx } = await setup()
+    const alice = await fakeAgent(ctx, 'identity-alice')
+    const bob = await fakeAgent(ctx, 'identity-bob')
+    const p = producer({ owner: alice.id })
+    const id = ctx.jobs.start(p.spec)
+    p.append('alice output')
+    const registryId = ctx.jobs.get(id, alice.id).registryId
+    try {
+      for (const tool of ['job_output', 'job_kill']) {
+        const result = await call(ctx, tool, { job_id: id, registry_id: registryId, wait: true }, bob)
+        expect(result.isError).toBe(true)
+        expect(text(result)).toContain('belongs to another session')
+      }
+      expect(p.cancels).toEqual([])
+      expect(text(await call(ctx, 'job_output', { job_id: id, registry_id: registryId }, alice)))
+        .toBe('alice output\n[status: running]')
+    } finally {
+      p.settle({ status: 'completed' })
+      await tick()
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('reads a consuming delta with a trailing status line', async () => {
     const { ctx } = await setup()
     const p = producer()
@@ -669,6 +726,54 @@ describe('tool-owned UI presentation (presentCall)', () => {
 })
 
 describe('completion notices across scoped mounts', () => {
+  it('does not report a model cancellation twice through global and owner-scoped controllers', async () => {
+    const { ctx, toolsFiber } = await setup()
+    const standing = createScope(ctx, {})
+    await standing.ctx.plugin(ToolJobs)
+    const inject = vi.fn()
+    const owner = await fakeAgent(standing.ctx, 'duplicate-kill-report', { inject })
+    const p = producer({ owner: owner.id })
+    const id = ctx.jobs.start(p.spec)
+    try {
+      expect((await call(ctx, 'job_kill', { job_id: id }, owner)).isError).toBe(false)
+      await toolsFiber.dispose()
+      await ctx.plugin(ToolJobs)
+      p.settle({ status: 'killed' })
+      await tick()
+      expect(inject).not.toHaveBeenCalled()
+    } finally {
+      p.settle({ status: 'killed' })
+      await tick()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('claims one notice when global and owner-scoped controllers can both report it, including after reload', async () => {
+    const { ctx, toolsFiber } = await setup()
+    const standing = createScope(ctx, {})
+    await standing.ctx.plugin(ToolJobs)
+    const inject = vi.fn()
+    const owner = await fakeAgent(standing.ctx, 'duplicate-report', { inject })
+    try {
+      const first = producer({ owner: owner.id })
+      const firstId = ctx.jobs.start(first.spec)
+      first.append('unconsumed first')
+      first.settle({ status: 'completed' })
+      await tick()
+      expect(inject).toHaveBeenCalledTimes(1)
+      expect(ctx.jobs.read(firstId, owner.id).chunks.map(chunk => chunk.text).join('')).toBe('unconsumed first')
+      const second = producer({ owner: owner.id })
+      ctx.jobs.start(second.spec)
+      await toolsFiber.dispose()
+      await ctx.plugin(ToolJobs)
+      second.settle({ status: 'completed' })
+      await tick()
+      expect(inject).toHaveBeenCalledTimes(2)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   /**
    * Two agent presets mounting `tool-jobs` over ONE host registry: each mount
    * subscribes with `{ owners: 'scope' }`, which the registry files into the
@@ -880,10 +985,12 @@ describe('completion notices', () => {
     const inject = vi.fn()
     const owner = await fakeAgent(ctx, 'sess-1', { inject })
     const p = producer({ owner: owner.id, label: 'pnpm test' })
-    ctx.jobs.start(p.spec)
+    const id = ctx.jobs.start(p.spec)
 
     p.settle({ status: 'completed', detail: 'exit code: 0' })
     await tick()
+    const job = ctx.jobs.get(id, owner.id)
+    expect(job.registryId).toEqual(expect.any(String))
     expect(inject).toHaveBeenCalledTimes(1)
     expect(inject).toHaveBeenCalledWith({
       id: expect.any(String) as unknown,
@@ -893,6 +1000,10 @@ describe('completion notices', () => {
         kind: 'tool-jobs',
         form: 'notice',
         summary: 'bash pnpm test [status: completed, exit code: 0]',
+        job: {
+          id, registryId: job.registryId, startedAt: job.startedAt,
+          finishedAt: job.finishedAt, status: 'completed',
+        },
       },
     })
   })
@@ -907,9 +1018,11 @@ describe('completion notices', () => {
       label: 'x'.repeat(1_000),
       outputLimitBytes: 61,
     })
-    ctx.jobs.start(first.spec)
+    const firstId = ctx.jobs.start(first.spec)
     first.settle({ status: 'completed', detail: 'd'.repeat(1_000) })
     await tick()
+    const firstJob = ctx.jobs.get(firstId, owner.id)
+    expect(firstJob.registryId).toEqual(expect.any(String))
 
     expect(inject).toHaveBeenNthCalledWith(
       1,
@@ -923,6 +1036,10 @@ describe('completion notices', () => {
           kind: 'tool-jobs',
           form: 'notice',
           summary: `subagent ${'x'.repeat(110)}…`,
+          job: {
+            id: firstId, registryId: firstJob.registryId, startedAt: firstJob.startedAt,
+            finishedAt: firstJob.finishedAt, status: 'completed',
+          },
         },
       },
     )

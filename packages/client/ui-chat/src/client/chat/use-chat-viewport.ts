@@ -2,6 +2,7 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { ChatScrollPosition } from '../contract/slots.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
+import { neighboringMessage } from './message-navigation-shortcut.ts'
 import { scrollMetrics, ScrollFollow, type ViewportMetrics } from './use-scroll-follow.ts'
 export type { ViewportMetrics } from './use-scroll-follow.ts'
 
@@ -264,6 +265,25 @@ export class ChatViewport {
       if (Number.isSafeInteger(candidate) && candidate >= turn) return this.align(row, 24, candidate)
     }
     return null
+  }
+
+  /**
+   * Align one authored message to the reading line without creating a second scroll owner.
+   * @param direction - previous or next authored message.
+   * @param atBottom - whether the reader follows the live tail.
+   * @returns a landing, an exhausted edge, or null while detached.
+   */
+  scrollToMessage(direction: -1 | 1, atBottom: boolean): ViewportLanding | { readonly edge: -1 | 1 } | null {
+    if (this.elements === null) return null
+    const { list, scroller } = this.elements
+    const rows = [...list.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')]
+      .filter(row => row.closest('[hidden], [inert]') === null)
+    const index = neighboringMessage(rows.map(row => row.getBoundingClientRect().top), scroller.getBoundingClientRect().top + 24, atBottom, direction)
+    if (index < 0) return { edge: -1 }
+    if (index >= rows.length) return { edge: 1 }
+    const row = rows[index]!
+    const turn = Number(row.dataset.chatTurn)
+    return this.align(row, 24, Number.isSafeInteger(turn) ? turn : null)
   }
 
   /**

@@ -227,6 +227,11 @@ class TestSessionQuery extends SessionQueryEngine {
 
 /** Install the required projection and point-query services for direct controller tests. */
 export function installSessionReadTestServices(ctx: Context): void {
+  // These SDK fixtures expose only their public native data; product privacy fixtures provide their own projection.
+  if (ctx.get('sessionOutboundProjection') === undefined) ctx.provide('sessionOutboundProjection', {
+    projectEvent: (value: unknown) => value,
+    projectBlock: (value: unknown) => value,
+  })
   if (ctx.get('sessionProjections') === undefined) new SessionProjectionRegistry(ctx)
   if (ctx.get('sessionQuery') === undefined) new TestSessionQuery(ctx)
 }
@@ -248,6 +253,7 @@ function installControllers(
   if (ctx.get('agentDefaultModel') === undefined) {
     ctx.provide('agentDefaultModel', {
       currentSelection: defaults.defaultModelSelection,
+      optionalSelection: defaults.defaultModelSelection,
       saveSelection: async (selection: AgentModelSelection) => {
         await defaults.saveDefaultModelSelection?.(selection)
       },

@@ -51,6 +51,7 @@ export interface UiWorkspace {
   forkSession(sessionId: SessionId, onCreated?: (childId: SessionId) => void): Promise<SessionId>
   /**
    * Resolve the reusable or newly created blank Session for a Workspace.
+   * Reuse stays inside this window: another window's draft is never adopted.
    * @param workspaceId - target Workspace.
    * @returns a Session already addressable through the Session Controller.
    */
@@ -126,6 +127,8 @@ export class DirectoryBrowseError extends Error {
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
   private readonly connecting = new Map<WorkspaceId, Promise<SessionId>>()
+  /** Blank Sessions this window's own Service instance staged for a Workspace. */
+  private readonly ownDrafts = new Set<SessionId>()
   private readonly lifetime = new AbortController()
   private readonly selection = createSnapshotStore<MainSelection>(
     {}, { persist: { name: 'dsh.sessions.current' } },
@@ -179,22 +182,34 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private reuseOrCreateBlank(workspace: WorkspaceView): Promise<SessionId> {
     const archived = this.workspaces.list.getSnapshot().archivedSessionIds
     const sessions = this.sessions.list.getSnapshot()
+    // A blank Session is the draft of the window that created it: reuse only
+    // this window's own drafts, so opening a Workspace or starting a Session
+    // never adopts — and never navigates — another window's draft.
+    const own = this.mainReference?.sessionId
     for (const id of sessions.ids) {
       const summary = sessions.byId[id]
-      if (summary === undefined || !summary.blank || summary.cwd !== workspace.path
+      if ((id !== own && !this.ownDrafts.has(id)) || summary === undefined || !summary.blank || summary.cwd !== workspace.path
         || !workspace.sessionIds.includes(id) || archived.includes(id)) continue
       return this.reuseBlank(workspace.workspaceId, id)
     }
-    return this.sessions.create({ workspaceId: workspace.workspaceId })
+    return this.createOwnBlank(workspace.workspaceId)
   }
 
   private async reuseBlank(workspaceId: WorkspaceId, sessionId: SessionId): Promise<SessionId> {
     try {
-      return await this.sessions.create({ workspaceId, sessionId })
+      const id = await this.sessions.create({ workspaceId, sessionId })
+      this.ownDrafts.add(id)
+      return id
     } catch (error: unknown) {
       if (sessionCreateErrorOf(error)?.rpcError.code !== 'session/writer-held') throw error
-      return this.sessions.create({ workspaceId })
+      return this.createOwnBlank(workspaceId)
     }
+  }
+
+  private async createOwnBlank(workspaceId: WorkspaceId): Promise<SessionId> {
+    const id = await this.sessions.create({ workspaceId })
+    this.ownDrafts.add(id)
+    return id
   }
 
   openSession(target: SessionTarget): void {

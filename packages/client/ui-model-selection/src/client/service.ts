@@ -19,7 +19,7 @@ import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/cli
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
 import { ModelCatalogDirectory } from './catalog.ts'
-import { ModelDirectory } from './directory.ts'
+import { ModelDirectory, type ModelDirectoryState } from './directory.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -42,8 +42,9 @@ export class ModelDirectoryResolver extends Service {
 
   /**
    * @param ctx - owning root context (the service registers itself as `models`).
+   * @param config - optional locale-owned composer refusal copy.
    */
-  constructor(ctx: Context) {
+  constructor(ctx: Context, private readonly config?: { blockReason: (state: ModelDirectoryState) => string }) {
     super(ctx, 'modelDirectories')
     this.catalog = new ModelCatalogDirectory(ctx)
     void this.catalog.load().catch(() => { /* selectors expose the shared error */ })
@@ -82,6 +83,23 @@ export class ModelDirectoryResolver extends Service {
       (name, attributes) => this.ctx.get('productAnalytics')?.track(name, attributes),
     )
     live.directories.set(binding, directory)
+    const config = this.config
+    if (config !== undefined) actx.inject(['conversation', 'locale'], (scope) => {
+      const conversation = scope.get('conversation')
+      const locale = scope.get('locale')
+      if (conversation === undefined || locale === undefined) return
+      const publish = (): void => {
+        const state = directory.store.getSnapshot()
+        conversation.blocks.set(sessionId, state.current === null && state.routable === false
+          ? { reason: config.blockReason(state) } : undefined)
+      }
+      scope.effect(() => {
+        const offDirectory = directory.store.subscribe(publish)
+        const offLocale = locale.subscribe(publish)
+        publish()
+        return () => { offDirectory(); offLocale(); conversation.blocks.set(sessionId, undefined) }
+      }, 'ui-model-selection: composer refusal')
+    })
     actx.effect(() => () => {
       directory.dispose()
       live.directories.delete(binding)

@@ -15,12 +15,13 @@ import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type { Message } from '@deepseek-ai/dsh-llm'
 import { SESSION_FORMAT_VERSION, SessionLogOffset, SessionSeq } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
-import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SurfaceIntent, SurfaceEventType } from './types.ts'
+import type { CreateSessionOptions, EpochHeader, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SessionId, SessionSeedEventState, SessionSeqCursor, SurfaceIntent, SurfaceEventType } from './types.ts'
 import { SurfaceManager, validateSessionEventData, validateSurfaceMetadata } from './surface.ts'
 import type { SessionSurface, SessionMessageProjection } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
 import { ToolHistoryProjection } from './tool-history.ts'
 import type { ToolHistory } from '@deepseek-ai/dsh-llm'
+import { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 
 import { buildForkSeed } from './fork.ts'
 
@@ -34,6 +35,7 @@ export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult, Session
 export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType } from './surface.ts'
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
+export { assertStableHistoryBoundary, selectActiveHistoryEvents } from './history.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -698,8 +700,9 @@ export class Session {
    *   {@link SurfaceEventType} events (every message-producing event must
    *   declare how it joins the surface, the sole source of derived model
    *   history) and
-   *   rejected by the compiler for non-surface types like `turn/start` or
-   *   `assistant/attempt`. Assistant messages embed their exact provider
+   *   absent for ordinary log-only events. External log-only types may instead
+   *   carry `{ ignorable: true }`; core known types reject that marker at append.
+   *   Assistant messages embed their exact provider
    *   stream and cannot cite top-level source events.
    * @returns the logged event — its assigned `seq`/`time` plus the SNAPSHOT of
    *   `data` that entered the log, so reading `event.data` back sees the logged
@@ -722,9 +725,13 @@ export class Session {
   append<T extends SessionEventType>(
     type: T,
     data: SessionEventMap[T],
-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent<T>] : []
+    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent<T>] : [opts?: { ignorable: true }]
   ): SessionEvent<T> {
-    const surfaceOpts: SurfaceIntent | undefined = opts[0]
+    const surfaceOpts = opts[0] as (SurfaceIntent & { ignorable?: true }) | undefined
+    if (surfaceOpts?.ignorable === true && (KNOWN_SESSION_EVENT_TYPES.has(type)
+      || surfaceOpts.surfaceOp !== undefined || surfaceOpts.sourceEventSeqs !== undefined)) {
+      throw new Error('only external log-only Session events may be informational')
+    }
     const surfaceMetadata = {
       ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
       ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
@@ -746,6 +753,7 @@ export class Session {
       seq: SessionSeq(this.log.length),
       time: Date.now(),
       data: dataSnapshot,
+      ...(surfaceOpts?.ignorable === true ? { ignorable: true as const } : {}),
       ...(surfaceMetadataSnapshot as { surfaceOp?: unknown; sourceEventSeqs?: unknown }),
     } as unknown as SessionEvent<T>)
     validateSessionEventData(event, `session event "${type}" at seq ${event.seq}`)
@@ -770,6 +778,16 @@ export class Session {
         if (entry.detachRequested && !entry.announcing) entry.detach()
       }
     }
+  }
+
+  /**
+   * Restore an earlier complete history surface while the writer is outside all open activities.
+   * @param throughSeq - earlier inclusive event coordinate, or -1 for an empty surface; tool exchanges must be complete.
+   * @param options - optional operation identity linking the checkout to its product-owned file transaction.
+   * @returns the required log-only event; all original events and execution counters remain unchanged.
+   */
+  checkout(throughSeq: SessionSeqCursor, options: { operationId?: string } = {}): SessionEvent<'session/history-checkout'> {
+    return this.append('session/history-checkout', { throughSeq, ...(options.operationId === undefined ? {} : { operationId: options.operationId }) })
   }
 
   /** Cached fold of the request-header events — see {@link requestHeader}. */

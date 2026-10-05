@@ -50,7 +50,7 @@ describe('filesFace', () => {
     expect(stream.sessionId).toBe(SESSION)
     expect(stream.signal.aborted).toBe(false)
     expect(list).not.toHaveBeenCalled()
-    expect(snapshot()).toEqual({ root: ROOT, expanded: [ROOT], levels: {}, scrollTop: 0, autoRefresh: true })
+    expect(snapshot()).toEqual({ root: ROOT, currentPath: ROOT, history: [ROOT], historyIndex: 0, showHidden: false, expanded: [ROOT], levels: {}, scrollTop: 0, autoRefresh: true })
     await stream.deliver('ready')
     expect(list).toHaveBeenCalledWith(SESSION, ROOT, stream.signal)
     expect(snapshot()!.levels[ROOT]).toEqual({ kind: 'loading' })

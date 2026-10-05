@@ -67,3 +67,37 @@ it('serializes overlapping saves and continues after a rejected write', async ()
   expect(calls).toEqual(['rejected', 'saved'])
   expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'test', model: 'final' })
 })
+
+it('keeps an own-provider composition empty until a complete native profile write succeeds', async () => {
+  const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
+  const { ctx } = await configurationFixture({ hmr: false })
+  const entry = [...ctx.loader.entries()].find(item => item.options.id === 'default-model')!
+  await ctx.configEditor.edit(entry, () => ({ initiallyUnconfigured: true, manualOnlyPresentation: 'guest' }))
+  const consumer = ctx.agentDefaultModel
+  const ownerFiber = entry.fiber
+  expect(consumer.optionalSelection()).toBeUndefined()
+  expect(consumer.allowsEmptySelection).toBe(true)
+  expect(consumer.manualOnlyPresentation).toBe('guest')
+  await expect(ctx.settings.update('default-model', { provider: 'fixture' })).rejects.toThrow('MODEL_SELECTION_INCOMPLETE')
+  expect(consumer.optionalSelection()).toBeUndefined()
+  const refused = vi.spyOn(ctx.configEditor, 'edit').mockRejectedValueOnce(new Error('profile write refused'))
+  await expect(consumer.saveSelection({ provider: 'fixture', model: 'rejected' })).rejects.toThrow('profile write refused')
+  refused.mockRestore()
+  expect(consumer.optionalSelection()).toBeUndefined()
+  await consumer.saveSelection({ provider: 'fixture', model: 'own-chat' })
+  expect(Object.is(entry.fiber, ownerFiber)).toBe(true)
+  expect(consumer.currentSelection()).toEqual({ provider: 'fixture', model: 'own-chat' })
+  expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'fixture', model: 'own-chat' })
+})
+
+it('refuses model acquisition by a manual-only composition through direct save and Loader edits', async () => {
+  const ctx = new Context()
+  onTestFinished(() => ctx.fiber.dispose())
+  const live = await liveConfig(ctx, DefaultModel, { manualOnly: true, manualOnlyPresentation: 'guest' })
+  const consumer = ctx.agentDefaultModel
+  expect(consumer.optionalSelection()).toBeUndefined()
+  await expect(consumer.saveSelection({ provider: 'fixture', model: 'model' })).rejects.toThrow('MODEL_NOT_CONFIGURED')
+  await expect(live.update({ provider: 'fixture', model: 'model' })).rejects.toThrow('manual-only composition')
+  expect(consumer.optionalSelection()).toBeUndefined()
+  expect(() => consumer.currentSelection()).toThrow('MODEL_NOT_CONFIGURED')
+})

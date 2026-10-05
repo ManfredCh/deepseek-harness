@@ -16,6 +16,94 @@ import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
 const configurations = new WeakMap<Context, Awaited<ReturnType<typeof liveConfig>>>()
 const initialConfigs = new WeakMap<Context, LlmPiAi.Options>()
 
+describe('composition-owned provider policy over native volatile configuration', () => {
+  it('publishes dormant policy-owned routes from the real Loader entry and withdraws its listener with the policy child', async () => {
+    const ctx = new Context()
+    cleanups.push(async () => { await ctx.fiber.dispose() })
+    await ctx.plugin(LlmRuntime)
+    const validateProfiles = vi.fn()
+    const policy = {
+      allowAmbientCredentials: false,
+      validateProfiles,
+      validateResolved: () => {},
+      assertDiscovery: () => {},
+      assertModel: () => {},
+    }
+    const providePolicy = () => ctx.plugin((child: Context) => { child.provide('llmPiAiPolicy', policy) })
+    const firstPolicy = providePolicy()
+    await firstPolicy.await()
+    const live = await liveConfig(ctx, LlmPiAi, { providers: {}, requireCompositionPolicy: true })
+    expect(ctx.llm.listProviders()).toEqual([])
+    const profiles = { fixture: { api: 'openai-completions', apiKeyEnv: 'FIXTURE_KEY', baseURL: 'https://fixture.invalid/v1', models: [{ id: 'fixture-chat' }] } }
+    await live.update({ providers: profiles })
+    expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['fixture'])
+    await expect(ctx.llm.resolveCallConfig({ provider: 'fixture', model: 'fixture-chat' })).resolves.toMatchObject({ provider: 'fixture', model: 'fixture-chat' })
+    await firstPolicy.dispose()
+    expect(ctx.llm.listProviders()).toEqual([])
+    validateProfiles.mockClear()
+    await live.replace({ providers: {}, requireCompositionPolicy: true })
+    expect(validateProfiles).not.toHaveBeenCalled()
+    const secondPolicy = providePolicy()
+    await secondPolicy.await()
+    await live.update({ providers: profiles })
+    expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['fixture'])
+  })
+
+  it('validates raw profiles before a Loader transaction and preserves the last accepted route', async () => {
+    const ctx = new Context()
+    cleanups.push(async () => { await ctx.fiber.dispose() })
+    await ctx.plugin(LlmRuntime)
+    const validateProfiles = vi.fn((profiles: Readonly<Record<string, LlmPiAi.PiAiProviderProfile>>) => {
+      if (Object.keys(profiles).some(provider => provider !== 'own-gateway')) throw new Error('GUEST_PROVIDER_FORBIDDEN')
+    })
+    const assertDiscovery = vi.fn(() => { throw new Error('GUEST_DISCOVERY_FORBIDDEN') })
+    ctx.provide('llmPiAiPolicy', {
+      allowAmbientCredentials: false,
+      validateProfiles,
+      validateResolved: () => {},
+      assertDiscovery,
+      assertModel: () => {},
+    })
+    const live = await liveConfig(ctx, LlmPiAi, {
+      requireCompositionPolicy: true,
+      providers: {
+        'own-gateway': { api: 'openai-completions', baseURL: 'https://fixture.invalid/v1', apiKeyEnv: 'GUEST_FIXTURE_KEY', models: [{ id: 'own-chat' }] },
+      },
+    })
+    expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['own-gateway'])
+    expect(validateProfiles.mock.calls[0]?.[0]['own-gateway']?.baseURL).toBe('https://fixture.invalid/v1')
+    const previous = structuredClone(live.entry.options.config)
+    await expect(live.update({ providers: { forbidden: { api: 'openai-completions', models: [{ id: 'other' }], baseURL: 'https://forbidden.invalid/v1' } } })).rejects.toThrow('GUEST_PROVIDER_FORBIDDEN')
+    expect(live.entry.options.config).toEqual(previous)
+    expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['own-gateway'])
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    try {
+      await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'own-gateway', baseURL: 'https://fixture.invalid/v1' })).rejects.toThrow('GUEST_DISCOVERY_FORBIDDEN')
+      expect(fetch).not.toHaveBeenCalled()
+    } finally { fetch.mockRestore() }
+  })
+
+  it('refuses a managed endpoint change before committing native provider config or discovery', async () => {
+    const ctx = new Context()
+    cleanups.push(async () => { await ctx.fiber.dispose() })
+    await ctx.plugin(LlmRuntime)
+    const live = await liveConfig(ctx, LlmPiAi, {
+      providers: {
+        managed: { api: 'openai-completions', baseURL: 'https://managed.invalid/v1', managedBaseURL: 'https://managed.invalid/v1', models: [{ id: 'managed-chat' }] },
+      },
+    })
+    const previous = structuredClone(live.entry.options.config)
+    await expect(live.update({ providers: { managed: { baseURL: 'https://elsewhere.invalid/v1' } } })).rejects.toThrow('requires its composition endpoint')
+    expect(live.entry.options.config).toEqual(previous)
+    expect((await ctx.llm.listModels('managed')).map(model => model.id)).toEqual(['managed-chat'])
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    try {
+      await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'managed', baseURL: 'https://elsewhere.invalid/v1' })).rejects.toThrow('cannot discover models at a different endpoint')
+      expect(fetch).not.toHaveBeenCalled()
+    } finally { fetch.mockRestore() }
+  })
+})
+
 /** Minimal foreign adapter: only needs to own a route the pi-ai plugin then wants. */
 class StubAdapter extends LlmAdapter {
 

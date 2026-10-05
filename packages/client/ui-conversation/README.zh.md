@@ -170,3 +170,7 @@ selector 必须是 owner currency 的纯函数。非 null 返回值作为 `match
 </details>
 
 **运行时不变式：** 不发布伴生入口。Conversation Definition、target builder 与 View 已由其所属注册表和 Slot ledger 校验。
+
+## 欢迎标题扩展
+
+`conversation.hero.headline` 是主对话声明的根级单占位。占用方接收当前可选 SessionId，无消息/账号内容；未占用时保留原 locale 欢迎标题。欢迎区按会话身份重挂载，常驻输入框与工作区选择不受影响。

@@ -192,6 +192,8 @@ describe('SettingsRoot trigger', () => {
     const trigger = screen.getByRole('button', { name })
     expect(trigger.getAttribute('aria-label')).toBe(name)
     expect(renderSlot).toHaveBeenCalledWith('settings.trigger', { wide })
+    expect(renderSlot).toHaveBeenCalledWith('settings.launcher',
+      expect.objectContaining({ wide, openSettings: expect.any(Function) }), expect.anything())
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
     trigger.focus()
     fireEvent.click(trigger, { detail: 0 })

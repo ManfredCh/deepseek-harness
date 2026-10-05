@@ -93,6 +93,7 @@ export class InputHub implements SessionInputResolver {
     const existing = this.shells.get(binding)
     if (existing !== undefined) return existing
     const { session, ctx: actx } = binding
+    const lifetime = new AbortController()
     const shell = new SessionInputShell({
       actx,
       submissionState: () => {
@@ -116,6 +117,9 @@ export class InputHub implements SessionInputResolver {
       popup: () => this.popup(actx),
       inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
       defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),
+      commandSettled: (token, outcome, signal) => actx.parallel(actx, 'conversation/command-settled', {
+        sessionId: binding.sessionId, token, outcome, signal: AbortSignal.any([signal, lifetime.signal]),
+      }),
       steerQueue: () => { void this.steerQueue(session, shell) },
       commandAttachments: {
         serialize: async (ids) => {
@@ -150,6 +154,7 @@ export class InputHub implements SessionInputResolver {
           shell.insertText(req.text, req.span, req.continue === true) ? true : undefined),
       ]
       return () => {
+        lifetime.abort()
         for (const off of offs) off()
         const drafts = shell.dispose()
         this.shells.delete(binding)
@@ -214,10 +219,10 @@ export class InputHub implements SessionInputResolver {
   }
 
   /**
-   * Default sink: optimistic clear + prompt. The session is always a real
+   * Default sink: retained draft + Host admission. The session is always a real
    * host entity (materialized when its workspace was picked), so there is
    * exactly one path; a failed first prompt is an ordinary prompt failure
-   * (banner via promptError, draft restored only while untouched).
+   * (banner via promptError, native draft retained through the refusal).
    */
   private sink(
     session: SessionFace,

@@ -213,7 +213,12 @@ describe('ask_user_question tool', () => {
 
     expect(schemas).toHaveLength(1)
     expect(schemas[0]).toMatchObject({
-      description: 'Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding.',
+      description: 'Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. '
+        + 'Send one or more questions, each with a stable id that will be echoed in the answer. '
+        + 'Prefer multiple-choice questions, which cost the user less to answer, and never ask for files or screenshots: this tool carries text only. '
+        + 'The turn stops until an answer arrives, so put everything you need in one call rather than asking one question at a time. '
+        + 'Do not start work that depends on the answer while it is pending, and treat elapsed time as neither an answer nor an approval. '
+        + 'When the question is optional, state the assumption you will proceed with instead of waiting.',
       parameters: { properties: { questions: { description: 'Questions to ask the user before continuing.' } } },
     })
     expect(schemas[0]?.parameters.properties).not.toHaveProperty('timeout')

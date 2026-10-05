@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import JobRegistry, { JobId } from '@deepseek-ai/dsh-jobs'
+import JobRegistry, { JobId, JobRegistryId } from '@deepseek-ai/dsh-jobs'
 import type { JobEvent, JobEventFilter, JobEventListener, JobView } from '@deepseek-ai/dsh-jobs'
 import * as JobsInvariant from '@deepseek-ai/dsh-jobs/invariant'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
@@ -61,6 +61,8 @@ async function setup() {
   return { emit, read }
 }
 
+const unclaimedReport = () => true
+
 describe('job-registry invariants', () => {
   it('accepts one job announced from registration to removal, each event agreeing with the read', async () => {
     const { emit, read } = await setup()
@@ -73,7 +75,7 @@ describe('job-registry invariants', () => {
     read({ ...RUNNING, status: 'stopping', output: { total: 4, earliest: 0 } })
     emit({ type: 'stopping', job: { ...RUNNING, status: 'stopping', output: { total: 4, earliest: 0 } } })
     read({ ...DONE, status: 'killed', output: { total: 4, earliest: 0 } })
-    emit({ type: 'settled', job: { ...DONE, status: 'killed', output: { total: 4, earliest: 0 } }, cause: 'kill', awaited: false })
+    emit({ type: 'settled', job: { ...DONE, status: 'killed', output: { total: 4, earliest: 0 } }, cause: 'kill', awaited: false, claimReport: unclaimedReport })
     emit({ type: 'output', id: ID, total: 4 })
     read(undefined)
     expect(() => { emit({ type: 'removed', job: { ...DONE, status: 'killed', output: { total: 4, earliest: 0 } } }) }).not.toThrow()
@@ -84,7 +86,7 @@ describe('job-registry invariants', () => {
     read({ ...RUNNING, progress: '3/4' })
     expect(() => { emit({ type: 'progress', job: { ...RUNNING, progress: '3/4' } }) }).not.toThrow()
     read(DONE)
-    expect(() => { emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false }) }).not.toThrow()
+    expect(() => { emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport }) }).not.toThrow()
     read(undefined)
     expect(() => { emit({ type: 'removed', job: DONE }) }).not.toThrow()
   })
@@ -117,7 +119,7 @@ describe('job-registry invariants', () => {
     }, /must announce a live status without finishedAt/],
     ['progress after settlement', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport })
       emit({ type: 'progress', job: { ...DONE, progress: 'late' } })
     }, /progress announced for job bash-1 after its settlement/],
     ['stopping with a terminal status', ({ emit, read }) => {
@@ -126,28 +128,28 @@ describe('job-registry invariants', () => {
     }, /stopping announced for job bash-1 with a terminal status/],
     ['settled twice', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false })
-      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport })
+      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /settled announced twice for job bash-1/],
     ['settled with a live status', ({ emit, read }) => {
       read(RUNNING)
-      emit({ type: 'settled', job: { ...RUNNING, finishedAt: 20 }, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: { ...RUNNING, finishedAt: 20 }, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /must announce a terminal status, got "running"/],
     ['settled without finishedAt', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: { ...RUNNING, status: 'completed' }, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: { ...RUNNING, status: 'completed' }, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /finishedAt no earlier than startedAt/],
     ['settled before it started', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: { ...DONE, finishedAt: 9 }, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: { ...DONE, finishedAt: 9 }, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /finishedAt no earlier than startedAt/],
     ['settled with a progress line', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: { ...DONE, progress: '9/10' }, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: { ...DONE, progress: '9/10' }, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /must announce a cleared progress line/],
     ['settled while the registry still reads it live', ({ emit, read }) => {
       read(RUNNING)
-      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport })
     }, /announces completed at 20 while the registry reads running at undefined/],
     ['removed before settlement', ({ emit, read }) => {
       read(RUNNING)
@@ -157,7 +159,7 @@ describe('job-registry invariants', () => {
     }, /removed announced for job bash-1 before its settlement/],
     ['removed while the registry still returns the job', ({ emit, read }) => {
       read(DONE)
-      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false })
+      emit({ type: 'settled', job: DONE, cause: 'producer', awaited: false, claimReport: unclaimedReport })
       emit({ type: 'removed', job: DONE })
     }, /removed announced for job bash-1 that the registry still returns/],
     ['output ahead of the read total', ({ emit, read }) => {
@@ -174,6 +176,10 @@ describe('job-registry invariants', () => {
       read(RUNNING)
       emit({ type: 'registered', job: { ...RUNNING, label: 'link' } })
     }, /announces label "link" while the registry reads "compile"/],
+    ['an announced registry lifecycle the registry does not read', ({ emit, read }) => {
+      read({ ...RUNNING, registryId: JobRegistryId('current-registry') })
+      emit({ type: 'registered', job: { ...RUNNING, registryId: JobRegistryId('old-registry') } })
+    }, /announces registryId "old-registry" while the registry reads "current-registry"/],
     ['an announced owner the registry does not read', ({ emit, read }) => {
       read({ ...RUNNING, owner: SessionId('alice') })
       emit({ type: 'registered', job: { ...RUNNING, owner: SessionId('alice') } })

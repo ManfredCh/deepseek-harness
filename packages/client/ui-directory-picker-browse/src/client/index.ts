@@ -14,7 +14,17 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { BrowseFlowInjected } from './flow.ts'
-import { BrowseDirectoryFlow } from './flow.ts'
+import { BrowseDirectoryFlow, FilesDirectoryFlow } from './flow.ts'
+import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Reuse the Host browser from a file surface without adopting a directory during browsing. */
+    'sidebar.right.tab.files.directoryFlow': {
+      kind: 'single'; scope: 'session'; owner: DirectoryFlowOwnerProps & { initialPath: string }
+    }
+  }
+}
 
 /** Locale namespace owning the browser dialog's copy. */
 const LOCALE_NS = 'directory-browser'
@@ -49,6 +59,8 @@ export function apply(ctx: ClientContext): void {
         'browser.loading': '加载中…',
         'browser.truncated': '文件夹过多，仅显示开头部分。',
         'browser.showHidden': '显示隐藏文件',
+        'browser.computerTitle': '浏览电脑目录',
+        'browser.workspaceOpen': '作为工作区打开',
       }],
       ['en', {
         'browser.title': 'Select Workspace Directory',
@@ -64,6 +76,8 @@ export function apply(ctx: ClientContext): void {
         'browser.loading': 'Loading…',
         'browser.truncated': 'Too many folders to list; only the beginning is shown.',
         'browser.showHidden': 'Show hidden files',
+        'browser.computerTitle': 'Browse computer directories',
+        'browser.workspaceOpen': 'Open as workspace',
       }],
     ]
     try {
@@ -92,4 +106,7 @@ export function apply(ctx: ClientContext): void {
         name: 'sidebar.workspaces.directoryFlow', inject: injected,
       }, BrowseDirectoryFlow)
     }))
+  ctx.slots.inject('sidebar.right.tab.files.directoryFlow', () => ctx.slots.register({
+    name: 'sidebar.right.tab.files.directoryFlow', inject: injected,
+  }, FilesDirectoryFlow))
 }

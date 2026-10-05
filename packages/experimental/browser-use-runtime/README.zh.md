@@ -45,7 +45,7 @@ MCP 提供方使用 `@deepseek-ai/dsh-experimental-browser-use-runtime/mcp` 中�
 <details>
 <summary>实现内部机制 — 点击展开</summary>
 
-[资源管理器](src/index.ts)以实时 Agent 身份为所有权键，并将操作取消与所有者释放关联起来。每个资源只有一个获取 promise 和一个操作队列。获取失败时，仅在提供方回调回滚已获取资源后释放保留。
+[资源管理器](src/index.ts)以实时 Agent 身份为所有权键，并将操作取消与所有者释放关联起来。每个资源只有一个获取 promise 和一个操作队列。提供方无法确认初始回滚时，返回带有 `acquisitionError` 的部分资源；获取与操作仍保留原始原因并失败，预约继续保留直到清理确认。MCP 辅助库释放所有权前，同时检查连接所有者的销毁结果与浏览器根释放观测。
 
 因释放而取消时，在 AgentHandle 等待空闲前开始资源清理。清理先关闭资源再等待运行中的操作，使连接清理能够中断不支持 abort 的上游 API。关闭失败会拒绝释放并保留所有权。Agent 作用域清理防止使用同一持久 id 恢复的 Session 继承之前的浏览器。
 

@@ -151,6 +151,7 @@ export class SessionEventStream extends RemoteJournalStream<
     private readonly address: SessionAddress,
     options: SessionEventStreamOptions,
   ) {
+    let checkoutRefreshScheduled = false
     super(remote, {
       name: 'session event stream',
       emptyCursor: -1,
@@ -160,7 +161,18 @@ export class SessionEventStream extends RemoteJournalStream<
       last: historyRecordLastSeq,
       compare: (left, right) => left - right,
       follows: (left, right) => right === left + 1,
-      publish: (change) => { options.publish(toSessionJournalChange(change)) },
+      publish: (change) => {
+        const publication = toSessionJournalChange(change)
+        options.publish(publication)
+        if (publication.type === 'append'
+          && publication.entry.event.type === 'session/history-checkout'
+          && !checkoutRefreshScheduled) {
+          checkoutRefreshScheduled = true
+          // A checkout can select content before the currently loaded window.
+          // Reuse the native stream lifecycle for a fresh active-history cut.
+          queueMicrotask(() => { checkoutRefreshScheduled = false; this.restart() })
+        }
+      },
       ...(options.carrierFailed === undefined
         ? {}
         : { carrierFailed: options.carrierFailed }),

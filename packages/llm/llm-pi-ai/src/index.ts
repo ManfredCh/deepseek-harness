@@ -68,6 +68,7 @@ import { PiAiAdapter } from './adapter.ts'
 import { authContextFrom, credentialStoreFrom } from './auth.ts'
 import { catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
+import { assertManagedProfileAuthority } from './managed-discovery.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
 import type { StoredModelDiscoveryProfile } from './discovery.ts'
@@ -89,6 +90,21 @@ export type {
 } from './config.ts'
 export { recordKeyFor } from './auth.ts'
 export { supportedProtocols } from './provider.ts'
+
+/** Optional composition policy. Settings cannot replace this owner boundary. */
+export interface PiAiCompositionPolicy {
+  /** Whether provider-native credential lookups may use the launching environment or host files. */
+  readonly allowAmbientCredentials: boolean
+  /** Check the raw provider records before profile resolution or a native Config commit. */
+  validateProfiles(providers: ReturnType<Config['providers']['get']>): void
+  /** Check the actual resolved routes and models before registry publication. */
+  validateResolved(profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>): void
+  /** Reject discovery destinations before credential resolution or Fetch. */
+  assertDiscovery(request: import('@deepseek-ai/dsh-llm').LlmModelDiscoveryOperation): void
+  /** Check the exact frozen model destination before credential or network access. */
+  assertModel(provider: string, baseURL: string): void
+}
+declare module '@deepseek-ai/cordis' { interface Context { llmPiAiPolicy: PiAiCompositionPolicy } }
 
 export const name = 'llm-pi-ai'
 export const inject = ['llm']
@@ -147,8 +163,19 @@ function directoryEntries(
 
 /** Register one generic pi-ai adapter for all configured provider routes. */
 export function apply(ctx: Context, config: Config): void {
-  ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
-  const settingsNs = ctx.fiber.entry?.options.id ?? NS
+  if (config.requireCompositionPolicy === true) {
+    ctx.inject(['llmPiAiPolicy'], owned => { applyBound(owned, config, ctx) })
+    return
+  }
+  applyBound(ctx, config, ctx)
+}
+
+function applyBound(ctx: Context, config: Config, ownerContext: Context): void {
+  const policy = ctx.get('llmPiAiPolicy')
+  const composedProviders = structuredClone(config.providers.get())
+  assertManagedProfileAuthority(composedProviders, composedProviders)
+  ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ownerContext.fiber)) })
+  const settingsNs = ownerContext.fiber.entry?.options.id ?? NS
   let lastRaw: ReturnType<Config['providers']['get']> | undefined
   let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
   /**
@@ -162,8 +189,11 @@ export function apply(ctx: Context, config: Config): void {
    */
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const raw = config.providers.get()
+    policy?.validateProfiles(raw)
+    assertManagedProfileAuthority(raw, composedProviders)
     if (raw === lastRaw && memoized !== undefined) return memoized
     const next = resolveProfiles(structuredClone(raw) as import('./config.ts').Options['providers'], 'deferred')
+    policy?.validateResolved(next)
     lastRaw = raw
     memoized = next
     return next
@@ -171,10 +201,15 @@ export function apply(ctx: Context, config: Config): void {
   profiles()
   ctx.on('internal/config', function (this: import('@deepseek-ai/cordis').Fiber, _raw, next) {
     const raw: unknown = next()
-    if (this !== ctx.fiber) return raw
+    if (this !== ownerContext.fiber) return raw
     const candidate = Config(raw as import('./config.ts').Options)
+    const candidateRaw = candidate.providers.get()
+    const candidateProviders = structuredClone(candidateRaw) as NonNullable<import('./config.ts').Options['providers']>
+    policy?.validateProfiles(candidateRaw)
+    assertManagedProfileAuthority(candidateProviders, composedProviders)
+    policy?.validateResolved(resolveProfiles(candidateProviders, 'deferred'))
     assertServiceable(
-      { providers: structuredClone(candidate.providers.get()) } as import('./config.ts').Options,
+      { providers: structuredClone(candidateProviders) },
       { providers: structuredClone(config.providers.get()) } as import('./config.ts').Options,
     )
     return raw
@@ -190,8 +225,16 @@ export function apply(ctx: Context, config: Config): void {
     // handing pi-ai `undefined` would let it pick up an unrelated ambient key
     // (OPENAI_API_KEY and friends), billing another tenant for a request the
     // deployment meant to authenticate differently.
-    if (ref === undefined) return undefined
+    if (ref === undefined) {
+      if (policy?.allowAmbientCredentials === false) {
+        throw new LlmError('GUEST_PROVIDER_KEY_REQUIRED: an explicit provider credential is required', 'MISSING_CREDENTIAL')
+      }
+      return undefined
+    }
     const credentials = ctx.get('credentials')
+    if (credentials === undefined && policy?.allowAmbientCredentials === false) {
+      throw new LlmError('GUEST_PROVIDER_KEY_REQUIRED: the composition credential service is unavailable', 'MISSING_CREDENTIAL')
+    }
     const hit = credentials !== undefined
       ? (await credentials.resolve(ref))?.value
       // Without the seam the environment is the whole credential plane.
@@ -208,9 +251,10 @@ export function apply(ctx: Context, config: Config): void {
   // One store and one ambient context for the whole plugin instance: both read
   // through `ctx` per call, so they stay correct across the collection rebuilds
   // a configuration change causes, and a sign-in survives one.
-  const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) }
+  const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx, policy?.allowAmbientCredentials !== false) }
   const adapter = new PiAiAdapter({
     profiles,
+    assertModel: (provider, baseURL) => policy?.assertModel(provider, baseURL),
     resolveApiKey,
     auth,
     resolveAttachments: () => ctx.get('attachments'),
@@ -231,7 +275,7 @@ export function apply(ctx: Context, config: Config): void {
   // Scoped to the authorization seam rather than injected outright, because a
   // composition without it (headless, ACP) simply has no surface to sign in
   // from, while everything else this plugin does still works.
-  ctx.inject(['authorization'], (authorized) => { registerPiAiFlows(authorized, auth) })
+  if (policy?.allowAmbientCredentials !== false) ctx.inject(['authorization'], (authorized) => { registerPiAiFlows(authorized, auth) })
   // The full installed catalog is configurable from the moment the plugin
   // mounts — dormant or not — so configuration surfaces can offer every
   // pi-ai provider before any route exists. Hand-declared routes join it as
@@ -261,8 +305,12 @@ export function apply(ctx: Context, config: Config): void {
     if (provider === undefined) return undefined
     const profile = profiles().get(provider)
     if (profile === undefined) return undefined
+    // A settings edit must not move a composition credential's destination.
+    const composed = Object.hasOwn(composedProviders, provider) ? composedProviders[provider] : undefined
     return {
       headers: profile.headers,
+      configuredBaseURL: composed === undefined ? profile.baseURL : composed.baseURL,
+      managedBaseURL: composed?.managedBaseURL,
       resolveApiKey: () => resolveApiKey(provider, profile),
     }
   }
@@ -272,10 +320,13 @@ export function apply(ctx: Context, config: Config): void {
   // except the stored credential and deployment-owned headers: the curated UI
   // accepts neither, so an already-configured route supplies both inside the
   // Host rather than widening the discovery request.
-  ctx.llm.registerModelDiscovery(settingsNs, (request, signal) => discoverModels(
-    { ...request, ...signal === undefined ? {} : { signal } },
-    () => storedDiscoveryProfile(request.provider),
-  ))
+  ctx.llm.registerModelDiscovery(settingsNs, (request, signal) => {
+    policy?.assertDiscovery(request)
+    return discoverModels(
+      { ...request, ...signal === undefined ? {} : { signal } },
+      () => storedDiscoveryProfile(request.provider),
+    )
+  })
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below. A bare
   // mount (zero routes) is the dormant posture: nothing registers until a
@@ -307,11 +358,11 @@ export function apply(ctx: Context, config: Config): void {
   }
   ensureRegistrationFacts()
 
-  ctx.on('loader/volatile-update', () => {
+  ctx.effect(() => ownerContext.on('loader/volatile-update', () => {
     try { ensureRegistrationFacts(); ensureDirectory() }
     catch (error) {
       ctx.logger.error('llm-pi-ai: configuration conflicts with an existing provider route')
       ctx.logger.error(error)
     }
-  })
+  }))
 }

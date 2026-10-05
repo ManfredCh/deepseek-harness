@@ -24,6 +24,7 @@ import { ConversationEventRegistry } from './event-registry.ts'
 import { HistoricalImageCache } from './historical-images.ts'
 import { ConversationViewRegistry } from './view-registry.ts'
 import { ConversationGroupRegistry } from './group-registry.ts'
+import { activeHistoryWindow, historyClosureEvents } from './history-checkout.ts'
 
 /** Observable faces published for one Session's Conversation assembly. */
 export interface ConversationBinding {
@@ -58,6 +59,9 @@ class BoundConversation implements ConversationBinding {
   private revision = -1
   private frame: number | undefined
   private disposeFeed: () => void = () => {}
+  private hasCheckout = false
+  private activeDurableSeqs = new Set<number>()
+  private activeCommandRuns = new Set<string>()
 
   constructor(
     feed: SessionEventSource,
@@ -105,12 +109,23 @@ class BoundConversation implements ConversationBinding {
 
   private replace(window: SessionEventWindow): void {
     this.revision = window.revision
-    this.publish(this.assembler.replaceWindow(window.entries, window.hasMore))
+    this.hasCheckout = window.entries.some(entry => entry.event.type === 'session/history-checkout')
+    const active = activeHistoryWindow(window.entries)
+    this.activeDurableSeqs = new Set(active.flatMap(entry => entry.type === 'event' ? [Number(entry.event.seq)] : []))
+    this.activeCommandRuns = new Set(active.flatMap(entry => entry.event.type === 'command/run' ? [String(entry.event.data.commandId)] : []))
+    this.publish(this.assembler.replaceWindow(active, window.hasMore, historyClosureEvents(window.entries, active)))
   }
 
   private accept(window: SessionEventWindow): void {
     if (window.revision === this.revision) return
     if (window.revision !== this.revision + 1 || window.change.kind === 'replace') {
+      this.replace(window)
+      return
+    }
+    if ((window.change.kind === 'prepend' && (this.hasCheckout || window.change.entries.some(entry => entry.event.type === 'session/history-checkout')))
+      || (window.change.kind === 'append' && window.change.entries.some(entry => entry.event.type === 'session/history-checkout'))) {
+      // Prepending joins the already-loaded checkout tail before selecting;
+      // selecting each page separately would resurrect an abandoned branch.
       this.replace(window)
       return
     }
@@ -122,6 +137,10 @@ class BoundConversation implements ConversationBinding {
       case 'append': {
         let publication: ConversationPublication = 'none'
         for (const event of window.change.entries) {
+          if (this.hasCheckout && event.type === 'transient' && !this.activeDurableSeqs.has(Math.floor(event.event.seq))) continue
+          if (this.hasCheckout && event.event.type === 'command/done' && !this.activeCommandRuns.has(String(event.event.data.commandId))) continue
+          if (event.event.type === 'command/run') this.activeCommandRuns.add(String(event.event.data.commandId))
+          if (event.type === 'event') this.activeDurableSeqs.add(event.event.seq)
           const next = this.assembler.append(event)
           if (next === 'immediate' || publication === 'none') publication = next
         }
@@ -129,6 +148,7 @@ class BoundConversation implements ConversationBinding {
         return
       }
       case 'settle-assistant':
+        if (window.change.entry) this.activeDurableSeqs.add(window.change.entry.event.seq)
         this.publish(this.assembler.settleAssistant(
           window.change.attemptId,
           window.change.entry,

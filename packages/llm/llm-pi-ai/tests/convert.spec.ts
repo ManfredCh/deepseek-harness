@@ -912,6 +912,10 @@ describe('mapStopReason / mapUsage', () => {
       .toMatchObject({ kind: 'error', failure: { code: 'SERVER' } })
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'provider timed out' })))
       .toMatchObject({ kind: 'error', failure: { code: 'TIMEOUT' } })
+    expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: '504 upstream_timeout' })))
+      .toMatchObject({ kind: 'error', failure: { code: 'TIMEOUT' } })
+    expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: '502 upstream_connection_error' })))
+      .toMatchObject({ kind: 'error', failure: { code: 'TRANSPORT' } })
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'ECONNRESET socket closed' })))
       .toMatchObject({ kind: 'error', failure: { code: 'TRANSPORT' } })
     expect(mapStopReason(assistant({

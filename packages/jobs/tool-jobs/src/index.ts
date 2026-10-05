@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { boundContextSummary, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, createUserMessage, HarnessError, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { TextRetainer } from '@deepseek-ai/dsh-output-retention'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -23,7 +23,16 @@ import { publicJob, renderModelDelta, statusLine } from './render.ts'
 import type { PublicJobSnapshot } from './render.ts'
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'tool-jobs': { kind: 'tool-jobs' } & ContextFormed
+    'tool-jobs': {
+      kind: 'tool-jobs'
+      job?: {
+        id: JobView['id']
+        registryId: NonNullable<JobView['registryId']> | null
+        startedAt: number
+        finishedAt: number | null
+        status: JobView['status']
+      }
+    } & ContextFormed
   }
 }
 
@@ -69,6 +78,7 @@ const PUBLIC_JOB_SCHEMA = {
   additionalProperties: false,
   properties: {
     id: { type: 'string', required: true },
+    registryId: { type: 'string' },
     kind: { type: 'string', required: true },
     label: { type: 'string', required: true },
     status: {
@@ -253,12 +263,6 @@ export function apply(ctx: Context, config: Config): void {
     text: 'Track every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job\'s work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.',
   })
 
-  // Live jobs whose kill the model itself requested through `job_kill`: that
-  // tool result is the model's delivery, so the settlement notice would only
-  // repeat it. A wait needs no entry here — the registry reports a settlement
-  // that released a live wait as `awaited`, whichever plugin was waiting.
-  const killedByModel = new Set<JobId>()
-
   // A busy owner is injected: the notice waits in its next-step inbox, which
   // the turn cannot close over, so jobs settling together cost one step. An
   // idle owner is woken instead, because an undelivered notice is a completion
@@ -269,18 +273,14 @@ export function apply(ctx: Context, config: Config): void {
   // under, so a mount under one preset never sees another preset's agents;
   // this listener owns delivery, not the choice of whom to deliver to.
   ctx.jobs.events.subscribe({ owners: 'scope' }, (event) => {
-    if (event.type === 'removed') {
-      killedByModel.delete(event.job.id)
-      return
-    }
     if (event.type !== 'settled') return
-    const delivered = killedByModel.delete(event.job.id) || event.awaited
-    if (delivered || event.cause === 'teardown' || event.job.owner === undefined) return
+    if (event.awaited || event.cause === 'teardown' || event.job.owner === undefined) return
     // The destination is the agent registered for the owner session now. An
     // owned job needed the agent registry to start, so the registry is only
     // absent here when it left before settlement — and then no inbox is left.
     const owner = ctx.get('agents')?.get(event.job.owner)
     if (owner === undefined) return
+    if (!event.claimReport()) return
     const message = createUserMessage({
       content: [{
         type: 'text',
@@ -290,6 +290,11 @@ export function apply(ctx: Context, config: Config): void {
         kind: 'tool-jobs',
         form: 'notice',
         summary: completionSummary(event.job),
+        job: {
+          id: event.job.id, registryId: event.job.registryId ?? null,
+          startedAt: event.job.startedAt, finishedAt: event.job.finishedAt ?? null,
+          status: event.job.status,
+        },
       },
     })
     if (delivery === 'wakeup' && owner.status === 'idle') {
@@ -314,6 +319,7 @@ export function apply(ctx: Context, config: Config): void {
     // this tool owns its deadline instead of using ToolDefinition.timeoutMs.
     parameters: {
       job_id: { type: 'string', required: true, description: 'Job id returned by the tool that started the background work.' },
+      registry_id: { type: 'string', description: 'Execution instance from the current job snapshot. A different instance is rejected without consuming output.' },
       wait: { type: 'boolean', description: 'Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false.' },
       timeout_ms: { type: 'number', description: 'Max wait in milliseconds with wait: true. Defaults to and is capped by configuration.' },
     },
@@ -336,6 +342,9 @@ export function apply(ctx: Context, config: Config): void {
     async execute(args, exec) {
       const id = validateJobId(args.job_id)
       const jobs = ctx.jobs
+      if (args.registry_id !== undefined && jobs.get(id, exec.agent?.id).registryId !== args.registry_id) {
+        throw new HarnessError('The job belongs to another execution instance; read the current snapshot first.', 'JOB_INSTANCE_MISMATCH')
+      }
       if (args.wait === true) {
         // A settlement that releases this wait is reported `awaited`, so the
         // notice listener above skips it: this result carries the terminal
@@ -373,6 +382,7 @@ export function apply(ctx: Context, config: Config): void {
     description: 'Request cancellation of a running background job.',
     parameters: {
       job_id: { type: 'string', required: true, description: 'Job id returned by the tool that started the background work.' },
+      registry_id: { type: 'string', description: 'Execution instance from the current job snapshot. A different instance is rejected before cancellation.' },
       reason: { type: 'string', description: 'Optional short reason, recorded in the log and forwarded to the job.' },
     },
     finalizeContent: finalizeJobContent,
@@ -399,10 +409,12 @@ export function apply(ctx: Context, config: Config): void {
     execute(args, exec) {
       const id = validateJobId(args.job_id)
       const jobs = ctx.jobs
-      const result = jobs.kill(id, exec.agent?.id, args.reason)
-      // The model's own kill is its delivery: the settlement notice would only
-      // repeat what this tool result already said.
-      if (result === 'requested') killedByModel.add(id)
+      if (args.registry_id !== undefined && jobs.get(id, exec.agent?.id).registryId !== args.registry_id) {
+        throw new HarnessError('The job belongs to another execution instance; read the current snapshot first.', 'JOB_INSTANCE_MISMATCH')
+      }
+      // The registry records this result's delivery for every reporter,
+      // including controllers mounted in an ancestor or reloaded scope.
+      const result = jobs.kill(id, exec.agent?.id, args.reason, true)
       // A projection describes current state without consuming pending output.
       const job = publicJob(jobs.get(id, exec.agent?.id))
       return Promise.resolve({

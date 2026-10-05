@@ -20,6 +20,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** Simplified Chinese dictionary and key-set source of truth. */
 export const zh = {
+  copyUnavailable: '当前浏览器无法访问剪贴板，可从路径栏复制。',
+  'error.writeDenied': '当前工作区禁止写入。', 'error.alreadyExists': '同名文件或文件夹已存在。', 'error.invalidName': '请填写单个文件或文件夹名称，不能包含路径分隔符。', 'error.sessionUnavailable': '请先打开这个会话再修改工作区。',
+  back: '后退', forward: '前进', up: '上一级', copyPath: '复制完整路径', breadcrumbs: '目录面包屑', path: '当前目录路径', open: '打开', newFile: '新建文件', newFolder: '新建文件夹', showHidden: '显示隐藏文件', createIn: '创建位置：', entryName: '文件或文件夹名称', create: '创建', cancel: '取消', expand: '展开或收起 {name}',
+
   'shortcut.noSession': '请先选择会话',
   'type.label': '文件',
   'guide.title': '工作区文件',
@@ -44,6 +48,10 @@ export type SidebarFilesKey = keyof typeof zh
 
 /** English dictionary, checked against the Chinese key set. */
 export const en = {
+  copyUnavailable: 'Clipboard unavailable; copy from the path field.',
+  'error.writeDenied': 'This workspace is read-only.', 'error.alreadyExists': 'That file or folder already exists.', 'error.invalidName': 'Use one file or folder name, without path separators.', 'error.sessionUnavailable': 'Open this Session before modifying the workspace.',
+  back: 'Back', forward: 'Forward', up: 'Up', copyPath: 'Copy full path', breadcrumbs: 'Directory breadcrumbs', path: 'Current directory path', open: 'Open', newFile: 'New file', newFolder: 'New folder', showHidden: 'Show hidden files', createIn: 'Create in:', entryName: 'File or folder name', create: 'Create', cancel: 'Cancel', expand: 'Expand or collapse {name}',
+
   'shortcut.noSession': 'Select a session first',
   'type.label': 'Files',
   'guide.title': 'Workspace files',

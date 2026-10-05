@@ -167,6 +167,11 @@ export class SessionCommandController {
             ? {}
             : { reasoningEffort: resolved.reasoningEffort }),
         }
+        // An opted-in empty composition must acquire its validated default
+        // before installing the Session selection. A failed write stays empty.
+        if (this.ctx.agentDefaultModel.optionalSelection() === undefined && this.ctx.agentDefaultModel.allowsEmptySelection) {
+          await this.ctx.agentDefaultModel.saveSelection(selected)
+        }
         this.agents.selectForNextRequest(agent, selected)
         void this.ctx.agentDefaultModel.saveSelection(selected).catch((error: unknown) => {
           this.ctx.logger.warn(
@@ -266,7 +271,7 @@ export class SessionCommandController {
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
     const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
     try {
-      const { provider, model } = this.ctx.agentDefaultModel.currentSelection()
+      const selected = this.ctx.agentDefaultModel.optionalSelection()
       await this.ctx.agents.create({
         sessionId: childId,
         seed,
@@ -279,7 +284,7 @@ export class SessionCommandController {
             ? {}
             : { agentPreset: composition.agentPreset }),
         },
-        agentOptions: { provider, model },
+        agentOptions: selected === undefined ? {} : { provider: selected.provider, model: selected.model },
         setup: composition.setup,
       })
     } catch (error) {
@@ -306,9 +311,11 @@ export class SessionCommandController {
   /**
    * Reject empty content, then admit one prompt after Agent and attachment validation.
    * @param request - Session identity, prompt content, source metadata, and delivery mode.
+   * @param signal - optional caller cancellation checked through asynchronous preparation, before inbox admission.
    * @returns acknowledgement that the Agent accepted the prompt.
    */
-  async prompt(request: SessionPromptRequest): Promise<SessionPromptValue> {
+  async prompt(request: SessionPromptRequest, signal?: AbortSignal): Promise<SessionPromptValue> {
+    signal?.throwIfAborted()
     if (!hasPromptContent(request.content)) {
       throw new RemoteError(
         'gateway/bad-request',
@@ -327,7 +334,12 @@ export class SessionCommandController {
       )
     }
     const agent = await this.resolveAgent(request.sessionId)
+    signal?.throwIfAborted()
     if (hasPromptRequest(agent, request.requestId)) return { accepted: true }
+    const defaultModel = this.ctx.get('agentDefaultModel')
+    if (defaultModel !== undefined && defaultModel.optionalSelection() === undefined) {
+      throw new RemoteError('session/model-not-configured', 'No model is configured. Configure your own provider in Models; local manual commands remain available.', {})
+    }
     const source: MessageSource = {
       kind: 'user',
       rpcId: request.requestId,
@@ -336,9 +348,11 @@ export class SessionCommandController {
     const hasImage = request.content.some(part => part.type === 'image')
     const admit = async (): Promise<SessionPromptValue> => {
       try {
+        signal?.throwIfAborted()
         if (hasImage) {
           const current = this.agents.selectionFor(agent).current
           const model = await this.ctx.llm.resolveModelInfo(current.provider, current.model)
+          signal?.throwIfAborted()
           if (model.inputModalities !== undefined && !model.inputModalities.includes('image')) {
             throw new RemoteError(
               'session/attachment-invalid',
@@ -352,6 +366,7 @@ export class SessionCommandController {
           receiptId => this.ctx.fileUploads.resolve(agent, receiptId),
         )
         const content = await this.ctx.attachments.admitPromptContent(admission.content)
+        signal?.throwIfAborted()
         const message: UserMessage = createUserMessage({ content, source })
         if (this.ctx.agents.get(agent.id) !== agent) {
           throw new RemoteError(
@@ -361,10 +376,12 @@ export class SessionCommandController {
           )
         }
         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
+        signal?.throwIfAborted()
         if (request.mode === 'steer') agent.steer(message)
         else agent.followup(message)
         binding.commit()
       } catch (error) {
+        signal?.throwIfAborted()
         if (remoteErrorOf(error) !== undefined) throw error
         if (error instanceof AttachmentError) {
           throw new RemoteError('session/attachment-invalid', error.message, { reason: error.code })

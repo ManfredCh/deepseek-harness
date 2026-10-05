@@ -26,6 +26,10 @@ export interface DirLevel {
   readonly entries: readonly WorkspaceDirectoryEntry[]
   /** The listing hit the endpoint's entry cap, so entries are missing. */
   readonly truncated: boolean
+  /** Canonical displayed directory returned by the Host. */
+  readonly absolutePath?: string
+  /** Host-authorized Workspace root for resource addressing. */
+  readonly rootPath?: string
 }
 
 /** What one directory level is doing right now. */
@@ -44,6 +48,20 @@ export interface FilesTabState {
   autoRefresh: boolean
   /** Absolute path of the workspace root this tree is rooted at. */
   root: string
+  /** Canonical directory currently displayed in this tab. */
+  currentPath: string
+  /** Accepted directory visits; forward entries retire after a new visit. */
+  history: string[]
+  /** Current visit within history. */
+  historyIndex: number
+  /** Include dot entries in the visible tree. */
+  showHidden: boolean
+  /** Last opened or created entry in the current directory. */
+  selectedPath?: string
+  /** Requested navigation target retained until its latest settlement. */
+  pendingPath?: string | undefined
+  /** Failure of the latest navigation; the displayed directory stays usable. */
+  navigationError?: RemoteFailure | undefined
   /** Level state by absolute directory path; a path absent here was never asked for. */
   levels: Record<string, LevelState>
   /** Expanded absolute directory paths, root included. */
@@ -80,6 +98,11 @@ type FilesActions = {
   toggled: (draft: FilesState, tabId: TabId, path: string) => void
   scrolled: (draft: FilesState, tabId: TabId, scrollTop: number) => void
   reset: (draft: FilesState, tabId: TabId) => void
+  navigating: (draft: FilesState, tabId: TabId, path: string) => void
+  navigated: (draft: FilesState, tabId: TabId, path: string, historyIndex?: number) => void
+  navigationFailed: (draft: FilesState, tabId: TabId, failure: RemoteFailure) => void
+  selected: (draft: FilesState, tabId: TabId, path: string) => void
+  hidden: (draft: FilesState, tabId: TabId, show: boolean) => void
   forget: (draft: FilesState, tabId: TabId) => void
 }
 
@@ -102,7 +125,7 @@ export function createFilesStore(): EngineStoreHandle<FilesState, FilesActions> 
        * @param root - absolute path of the workspace root.
        */
       start: (d, tabId: TabId, root: string) => {
-        d.byTab[tabId] = { root, levels: {}, expanded: [root], scrollTop: 0, autoRefresh: true }
+        d.byTab[tabId] = { root, currentPath: root, history: [root], historyIndex: 0, showHidden: false, levels: {}, expanded: [root], scrollTop: 0, autoRefresh: true }
       },
       /**
        * Mark one directory as being listed.
@@ -180,6 +203,17 @@ export function createFilesStore(): EngineStoreHandle<FilesState, FilesActions> 
        * @param d - draft state.
        * @param tabId - the tab being drawn.
        */
+      navigating: (d, tabId, path) => { const tree = bucket(d, tabId); tree.pendingPath = path; tree.navigationError = undefined },
+      navigated: (d, tabId, path, historyIndex) => {
+        const tree = bucket(d, tabId)
+        if (historyIndex !== undefined) { tree.historyIndex = historyIndex; tree.history[historyIndex] = path }
+        else if (tree.currentPath !== path) { tree.history = [...tree.history.slice(0, tree.historyIndex + 1), path]; tree.historyIndex = tree.history.length - 1 }
+        tree.currentPath = path; tree.selectedPath = path; tree.pendingPath = undefined; tree.navigationError = undefined
+        if (!tree.expanded.includes(path)) tree.expanded.push(path)
+      },
+      navigationFailed: (d, tabId, failure) => { const tree = bucket(d, tabId); tree.pendingPath = undefined; tree.navigationError = failure },
+      selected: (d, tabId, path) => { bucket(d, tabId).selectedPath = path },
+      hidden: (d, tabId, show) => { bucket(d, tabId).showHidden = show },
       reset: (d, tabId: TabId) => {
         bucket(d, tabId).levels = {}
       },

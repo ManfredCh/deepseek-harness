@@ -433,6 +433,7 @@ export class SidebarRightController implements ISidebarRight {
       kind: claim.kind,
       contentId: claim.contentId,
       title: claim.title,
+      ...this.tabs.get(claim.kind)?.pinned ? { pinned: true } : {},
       ...placement.paneId === undefined ? {} : { paneId: placement.paneId },
       ...preferNewPane ? { preferNewPane: true } : {},
       ...placement.replaceTab === undefined ? {} : { replaceTab: placement.replaceTab },

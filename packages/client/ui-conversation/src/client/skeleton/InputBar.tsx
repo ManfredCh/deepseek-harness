@@ -44,7 +44,7 @@ export type InputBarProps = ComposerBarProps
 
 export const InputBar = memo(function InputBar({
   useSession, useInput, inputActions, keyboard, addFiles, removeAttachment, resolveDraftAttachments,
-  retryFileUpload,
+  retryFileUpload, bindFocusShortcut,
   toggleCommandMenu, stop, t,
   renderSlot, useBusyEnter, useFileUploads, useNotices, useLexicon, useMenuLauncher, useStopShortcut,
   useProjection, sessionId, variant, disabled: inert = false, blocked,
@@ -180,6 +180,13 @@ export const InputBar = memo(function InputBar({
     if (locked || editor === null) return
     focusDraftEditor(editor, revealSelection)
   }, [locked, sessionId, editor])
+  useEffect(() => {
+    if (locked || editor === null) return
+    return bindFocusShortcut?.(() => {
+      editor.getRootElement()?.focus({ preventScroll: true })
+      editor.focus(() => { revealSelection() })
+    })
+  }, [locked, sessionId, editor, bindFocusShortcut])
 
   // A persisted draft arrives AFTER the unlock effect: DefaultConversationViews
   // adopts it in its own mount effect, and a parent's mount effect runs after

@@ -547,7 +547,10 @@ describe('background execution through the job runtime', () => {
     const started = await call(ctx, 'bash', { command: 'echo bg-ok', description: 'test command', run_in_background: true })
     expect(started.isError).toBe(false)
     if (started.isError) throw new Error('expected background bash success')
-    expect(started.value).toEqual({ kind: 'background', jobId: 'bash-1' })
+    const job = ctx.jobs.list()[0]
+    if (job === undefined) throw new Error('missing background bash job')
+    expect(job.registryId).toEqual(expect.any(String))
+    expect(started.value).toEqual({ kind: 'background', jobId: job.id, registryId: job.registryId, startedAt: job.startedAt })
     expect(text(started)).toBe('started background job bash-1')
 
     const read = await callUntilText(ctx, 'job_output', { job_id: 'bash-1' }, 'bg-ok')

@@ -73,6 +73,8 @@ A composition with no executor provider never activates the tool. Background cal
 
 -----
 
+主动后台的 `background` 与超时移交的 `promoted` canonical 结果都携带 Registry 返回的 `startedAt` 和可选 `registryId`。关联到同一 Job 的读回与取消继续通过原生 Jobs 工具；文本展示、输出泵、模型游标和调用取消规则保持原生行为。
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

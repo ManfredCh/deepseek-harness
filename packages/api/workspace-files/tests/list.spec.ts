@@ -39,6 +39,17 @@ describe('workspaceFiles.list — the happy path', () => {
     ])
   })
 
+  it('reports the canonical root for a workspace selected through its own symlink without opening outside links', async () => {
+    const alias = join(outside, 'workspace-alias')
+    await symlink(workspace, alias)
+    const listing = await endpoint().list({ ...harness.scope, workspaceRoot: alias }, '.', signal())
+    expect(listing.absolutePath).toBe(workspace)
+    expect(listing.rootPath).toBe(workspace)
+    await symlink(outside, join(workspace, 'escape-root'))
+    const failure = await failureOf(endpoint().list({ ...harness.scope, workspaceRoot: alias }, 'escape-root', signal()))
+    expect(failure.code).toBe('workspace-file/outside-workspace')
+  })
+
   it('accepts the absolute workspace root and reports the same empty path', async () => {
     const listing = await endpoint().list(harness.scope, workspace, signal())
     expect(listing.path).toBe('')
