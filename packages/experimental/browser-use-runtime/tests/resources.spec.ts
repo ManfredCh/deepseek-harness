@@ -101,6 +101,58 @@ describe('Session browser resource ownership', () => {
     await resources.dispose()
   })
 
+  it('retains a failed acquisition whose close is unverified and never exposes its value', async () => {
+    const { ctx, owner } = await fixture()
+    const a = await owner('failed-partial')
+    const b = await owner('blocked-successor')
+    const startup = new Error('raw initial browser failure')
+    const release = new Error('browser release remains unverified')
+    const failure = new AggregateError([startup, release], 'initial acquisition and rollback failed', { cause: startup })
+    const recycle = vi.fn(async () => {})
+    const close = vi.fn(async () => { throw release })
+    const open = vi.fn(async () => ({ value: 1, acquisitionError: failure, recycle, close }))
+    const resources = new SessionResources<number>(ctx, { label: 'partial', exclusive: true, open })
+    await expect(resources.get(a.agent)).rejects.toBe(failure)
+    expect(failure.cause).toBe(startup)
+    expect(resources.health(a.agent)).toMatchObject({ suspended: true, lastReason: failure.message })
+    expect(resources.available(a.agent)).toBe(false)
+    expect(resources.available(b.agent)).toBe(false)
+    const operation = vi.fn(async () => 2)
+    await expect(resources.run(a.agent, new AbortController().signal, operation)).rejects.toBe(failure)
+    expect(operation).not.toHaveBeenCalled()
+    await expect(resources.recycle(a.agent)).rejects.toBe(failure)
+    expect(recycle).not.toHaveBeenCalled()
+    await expect(resources.get(b.agent)).rejects.toThrow('already reserved')
+    await expect(resources.dispose()).rejects.toThrow('browser cleanup failed')
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases a failed partial acquisition only after close confirms and admits the successor', async () => {
+    const { ctx, owner } = await fixture()
+    const a = await owner('failed-partial-confirmed')
+    const b = await owner('released-successor')
+    const entered = Promise.withResolvers<undefined>()
+    const confirmed = Promise.withResolvers<undefined>()
+    const failure = new Error('initial browser failure')
+    const open = vi.fn().mockResolvedValueOnce({
+      value: 1, acquisitionError: failure,
+      async close() { entered.resolve(undefined); await confirmed.promise },
+    }).mockResolvedValue({ value: 2, close: async () => {} })
+    const resources = new SessionResources<number>(ctx, { label: 'partial', exclusive: true, open })
+    await expect(resources.get(a.agent)).rejects.toBe(failure)
+    const disposing = a.dispose()
+    await entered.promise
+    expect(resources.available(b.agent)).toBe(false)
+    await expect(resources.get(b.agent)).rejects.toThrow('already reserved')
+    confirmed.resolve(undefined)
+    await disposing
+    expect(resources.available(b.agent)).toBe(true)
+    expect(await resources.get(b.agent)).toBe(2)
+    expect(open).toHaveBeenCalledTimes(2)
+    await resources.dispose()
+  })
+
   it('retries failed acquisition for the same live owner without duplicating cleanup', async () => {
     const { ctx, owner } = await fixture()
     const a = await owner('a')
@@ -354,4 +406,142 @@ it('reports early disposal cleanup failure while retaining the owned resource', 
   expect(warning).toHaveBeenCalledWith(expect.stringContaining('cleanup during Session cancellation failed'))
   await expect(resources.dispose()).rejects.toThrow('browser cleanup failed')
   warning.mockRestore()
+})
+
+it('rebuilds one live resource in place and shares concurrent rebuilds', async () => {
+  const { ctx, owner } = await fixture()
+  const a = await owner('recycle')
+  const b = await owner('no-resource')
+  const recycle = vi.fn(async () => {})
+  const close = vi.fn(async () => {})
+  const resources = new SessionResources<number>(ctx, {
+    label: 'test', exclusive: false,
+    open: async () => ({ value: 1, close, recycle }),
+  })
+  await resources.get(a.agent)
+  await Promise.all([resources.recycle(a.agent), resources.recycle(a.agent), resources.recycle(a.agent)])
+  expect(recycle).toHaveBeenCalledTimes(1) // a burst of rebuild requests starts one replacement
+  expect(await resources.get(a.agent)).toBe(1) // the entry and its value survive
+  await resources.recycle(b.agent) // no acquired resource is a no-op, not an error
+  await resources.dispose()
+  expect(close).toHaveBeenCalledTimes(1)
+})
+
+it('rebuilds the connection when an in-flight operation is canceled', async () => {
+  const { ctx, owner } = await fixture()
+  const a = await owner('recycle-on-abort')
+  const recycle = vi.fn(async () => {})
+  const resources = new SessionResources<number>(ctx, {
+    label: 'test', exclusive: false,
+    open: async () => ({ value: 1, close: async () => {}, recycle }),
+  })
+  await resources.get(a.agent)
+  // A canceled in-flight operation ends the provider connection rather than only
+  // rejecting its caller; the operation keeps ownership until its work settles.
+  const controller = new AbortController()
+  const entered = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  const running = resources.run(a.agent, controller.signal, async () => { entered.resolve(undefined); await release.promise; return 7 })
+  await entered.promise
+  controller.abort(new Error('user stop'))
+  await vi.waitFor(() => { expect(recycle).toHaveBeenCalledTimes(1) })
+  release.resolve(undefined)
+  await expect(running).rejects.toThrow('user stop')
+  expect(await resources.get(a.agent)).toBe(1)
+  await resources.dispose()
+})
+
+it('leaves an in-flight operation owned when a queued call is canceled', async () => {
+  const { ctx, owner } = await fixture()
+  const a = await owner('queued-cancel')
+  const release = vi.fn(async () => {})
+  const recycle = vi.fn(async () => {})
+  const resources = new SessionResources<number>(ctx, {
+    label: 'test', exclusive: false,
+    open: async () => ({ value: 1, close: async () => {}, recycle, release }),
+  })
+  await resources.get(a.agent)
+  const entered = Promise.withResolvers<undefined>()
+  const finish = Promise.withResolvers<undefined>()
+  const running = resources.run(a.agent, new AbortController().signal, async () => {
+    entered.resolve(undefined)
+    await finish.promise
+    return 'running'
+  })
+  await entered.promise
+  // Cancel only the queued call. It never acquired the connection, so its
+  // cancellation must not release or rebuild the connection the running call
+  // still owns.
+  const controller = new AbortController()
+  const queued = resources.run(a.agent, controller.signal, async () => 'queued')
+  controller.abort(new Error('cancel queued only'))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(release).not.toHaveBeenCalled()
+  expect(recycle).not.toHaveBeenCalled()
+  finish.resolve(undefined)
+  expect(await running).toBe('running')
+  await expect(queued).rejects.toThrow('cancel queued only')
+  await resources.dispose()
+})
+
+it('shares one replacement across a burst of failures and suspends at the budget', async () => {
+  const { ctx, owner } = await fixture()
+  const a = await owner('failure-burst')
+  const held = Promise.withResolvers<undefined>()
+  const recycle = vi.fn(() => held.promise)
+  const resources = new SessionResources<number>(ctx, {
+    label: 'test', exclusive: false, rebuildBudget: 3,
+    open: async () => ({ value: 1, close: async () => {}, recycle }),
+  })
+  await resources.get(a.agent)
+  // Three failures arrive before the first replacement settles: the burst
+  // starts one rebuild, and the third spends the budget.
+  resources.reportFailure(a.agent, 'Target closed')
+  resources.reportFailure(a.agent, 'Target closed')
+  const spent = resources.reportFailure(a.agent, 'Target closed')
+  expect(spent).toMatchObject({ failures: 3, suspended: true, lastReason: 'Target closed' })
+  await vi.waitFor(() => { expect(recycle).toHaveBeenCalledTimes(1) })
+  held.resolve(undefined)
+  await resources.dispose()
+})
+
+it('reports a refused release during cancellation instead of a clean stop', async () => {
+  const { ctx, owner } = await fixture()
+  const a = await owner('release-refused')
+  const releaseEntered = Promise.withResolvers<undefined>()
+  const releaseResult = Promise.withResolvers<undefined>()
+  const recycle = vi.fn(async () => {})
+  const resources = new SessionResources<number>(ctx, {
+    label: 'test', exclusive: false, rebuildBudget: 3,
+    open: async () => ({
+      value: 1,
+      close: async () => {},
+      recycle,
+      async release() { releaseEntered.resolve(undefined); await releaseResult.promise },
+    }),
+  })
+  await resources.get(a.agent)
+  const controller = new AbortController()
+  const entered = Promise.withResolvers<undefined>()
+  const running = resources.run(a.agent, controller.signal, async (_value, signal) => {
+    // The provider operation observes cancellation immediately; the release it
+    // triggers is still in flight when it settles.
+    entered.resolve(undefined)
+    await new Promise<never>((_resolve, reject) => { signal.addEventListener('abort', () => { reject(signal.reason) }, { once: true }) })
+  })
+  const canceled = running.catch((error: unknown) => error)
+  await entered.promise
+  controller.abort(new Error('user stop'))
+  await releaseEntered.promise
+  releaseResult.reject(new Error('release refused'))
+  const failure = await canceled
+  // The refused release must not be reported as a clean stop.
+  expect(failure).toBeInstanceOf(Error)
+  expect((failure as Error).message).toContain('could not confirm')
+  expect((failure as Error).cause).toMatchObject({ message: 'release refused' })
+  // The provider still owns the connection it refused to release, so no
+  // replacement may be mounted beside it.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(recycle).not.toHaveBeenCalled()
+  await resources.dispose()
 })

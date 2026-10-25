@@ -25,13 +25,15 @@ English | [中文](README.zh.md)
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount this plugin when a composition routes model requests through pi-ai's provider catalogs or through gateways that pi-ai's installed catalog does not describe. The `providers` dictionary is the whole configuration surface: each key is the provider route name a request selects with `GenerateOptions.provider`.
+Mount this plugin when a composition routes model requests through pi-ai's provider catalogs or through gateways that pi-ai's installed catalog does not describe. The `providers` dictionary owns the provider configuration: each key is the provider route name a request selects with `GenerateOptions.provider`.
 
 The adapter accepts the LLM service's [request-only user inputs](../llm/README.md#use-this-package) alongside durable history. User identity and attribution do not enter pi-ai content; assistant replay metadata and tool-call correlation remain attached to durable messages.
 
 ### When to choose it
 
 Choose this adapter when the same composition serves several providers, when a route needs pi-ai's catalog defaults with a few fields corrected, or when a hand-declared gateway must be reached through its own endpoint and protocol. Choose `dsh-llm-deepseek` for the direct DeepSeek route when the deployment needs no other provider. Both adapters can be mounted together because their route names do not collide; registering a route another adapter already owns fails plugin loading.
+
+A composition may require its own `llmPiAiPolicy` through `requireCompositionPolicy: true`. That owner validates raw `providers.get()` records in the native configuration transaction, resolved routes before registration, discovery destinations before Fetch, and the frozen model endpoint before credential access. Disabling ambient credentials also disables provider-native environment/file fallbacks and sign-in flows. A `managedBaseURL` is pinned to the composition: settings cannot remove or retarget it, discovery does not follow redirects, and a different draft endpoint receives no stored credential or deployment headers.
 
 ### Configure provider routes
 

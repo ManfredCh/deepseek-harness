@@ -299,7 +299,7 @@ describe('contextBreakdown session projection', () => {
     const first = appendUser(session, 'first message')
     const last = appendUser(session, 'last message')
     const definition = contextBreakdownProjectionDefinition
-    const state = session.snapshotEvents().reduce(definition.apply, definition.init())
+    const state = session.snapshotEvents().reduce((previous, event) => definition.apply(previous, event), definition.init())
     const before = JSON.stringify(state)
     const summary = createUserMessage({ content: [{ type: 'text', text: 'summary' }], source: { kind: 'user' } })
     const replacement = session.append('user/message', summary, {
@@ -411,7 +411,7 @@ describe('contextBreakdown session projection', () => {
     const { session } = await harness()
     const head = appendSystem(session, 'head')
     const definition = contextBreakdownProjectionDefinition
-    const state = session.snapshotEvents().reduce(definition.apply, definition.init())
+    const state = session.snapshotEvents().reduce((previous, event) => definition.apply(previous, event), definition.init())
     replaceSystem(session, head, 'same')
     const next = definition.apply(state, session.snapshotEvents().at(-1)!)
     expect(next).not.toBe(state)
@@ -466,6 +466,24 @@ describe('contextBreakdown session projection', () => {
     expect(() => ctx.sessionProjections.restore(
       invalid, session.snapshotEvents(), SessionLogOffset(0), session.header, session.inheritedEventCount,
     )).toThrow()
+  })
+
+  it('replays version-4 positional checkpoints that placed a late system after queued users', async () => {
+    const { ctx, session } = await harness()
+    const user = appendUser(session, 'queued user')
+    const head = appendSystem(session, 'system head')
+    const current = ctx.sessionProjections.checkpoint(session)
+    const row = current['contextBreakdown']!
+    const state = ctx.sessionProjections.stateOf(session, 'contextBreakdown')!
+    expect(state.nodes.map(node => node.seq)).toEqual([head, user])
+    const stale = { ...current, contextBreakdown: { ...row, ver: 4, val: { ...state, nodes: [...state.nodes].reverse() } } }
+    expect(ctx.sessionProjections.viewCheckpoint(stale).contextBreakdown).toBeUndefined()
+    expect(ctx.sessionProjections.restoreFloor(stale)).toBe(0)
+    const restored = ctx.sessionProjections.restore(
+      stale, session.snapshotEvents(), SessionLogOffset(0), session.header, session.inheritedEventCount,
+    )
+    expect(restored.checkpoint).toEqual(current)
+    expect(restored.checkpoint['contextBreakdown']?.ver).toBe(6)
   })
 
   it('discards lower-layer version-3 scalar caches and refolds the full surface', async () => {

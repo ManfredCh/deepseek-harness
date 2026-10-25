@@ -197,6 +197,8 @@ const BACKGROUND_OUTPUT_PROPERTIES = {
   kind: { type: 'string', required: true, const: 'background' },
   jobId: { type: 'string', required: true },
   cwd: { type: 'string', required: true },
+  registryId: { type: 'string' },
+  startedAt: { type: 'integer', required: true },
 } as const
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -346,6 +348,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           kind: 'promoted' as const,
           cwd: spec.workdir,
           jobId: attached.id,
+          startedAt: read.job.startedAt,
+          ...read.job.registryId !== undefined ? { registryId: read.job.registryId } : {},
           timeoutMs,
           output: renderJobRead(
             ringDelta(read.chunks), read.lossy, read.job.output.spillPaths ?? [], attached.process()?.sandbox, escalationModes,
@@ -415,6 +419,8 @@ export function apply(ctx: Context, config: Config = {}): void {
                 kind: { type: 'string', required: true, const: 'promoted' },
                 cwd: { type: 'string', required: true },
                 jobId: { type: 'string', required: true },
+                registryId: { type: 'string' },
+                startedAt: { type: 'integer', required: true },
                 timeoutMs: { type: 'number', required: true },
                 output: { type: 'string', required: true },
               },
@@ -506,7 +512,12 @@ export function apply(ctx: Context, config: Config = {}): void {
           // The caller owns cancellation until ctx.jobs commits detached ownership.
           if (exec.signal.aborted) throw toolAborted()
           const spec = ctx.shell.resolve({ ...request, onExpiry: 'none' })
-          return { kind: 'background' as const, jobId: startJob(jobs, args, exec, spec).id, cwd: spec.workdir }
+          const attached = startJob(jobs, args, exec, spec)
+          const job = jobs.get(attached.id, exec.agent?.id)
+          return {
+            kind: 'background' as const, jobId: attached.id, cwd: spec.workdir, startedAt: job.startedAt,
+            ...job.registryId !== undefined ? { registryId: job.registryId } : {},
+          }
         }
         // A foreground call is a job the tool waits on, so the command is
         // visible and killable from the moment it starts and outlives the wait

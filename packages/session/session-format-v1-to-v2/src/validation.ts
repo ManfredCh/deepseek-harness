@@ -12,6 +12,7 @@ import type {
   SessionFormatJsonValue,
 } from '@deepseek-ai/dsh-session-format'
 import { assertReleasedArtifactRelationships } from '@deepseek-ai/dsh-session-format-v0-to-v1'
+import type { ReleasedRelationshipExtensions } from '@deepseek-ai/dsh-session-format-v0-to-v1'
 import { RELEASED_V2_EVENT_DISPOSITIONS } from './dispositions.ts'
 
 const HEADER_REQUIRED = ['version', 'id', 'createdAt', 'isSeeded', 'delegationDepth'] as const
@@ -56,6 +57,7 @@ function validateReleasedV2Artifact(
   mode: 'current' | 'physical',
   knownEventTypes?: ReadonlySet<string>,
   relationshipHeaderVersion: number = artifact.header.version,
+  relationshipExtensions: Pick<ReleasedRelationshipExtensions, 'firstSurfaceHeadSeq' | 'surfaceHeadSeqs' | 'surfaceCheckouts'> = {},
 ): void {
   assertReleasedV2Header(artifact.header)
   const cut = sessionFormatCount(artifact.inheritedEventCount, 'format v2 inherited event count')
@@ -98,7 +100,7 @@ function validateReleasedV2Artifact(
   if (mode === 'current') {
     assertReleasedArtifactRelationships({
       ...artifact, header: { ...artifact.header, version: relationshipHeaderVersion },
-    }, RELEASED_V2_RELATIONSHIP_EXTENSIONS)
+    }, { ...RELEASED_V2_RELATIONSHIP_EXTENSIONS, ...relationshipExtensions })
   }
 }
 
@@ -143,14 +145,16 @@ export function assertReleasedV2Keys(
  * @param artifact - detached vocabulary-restored artifact.
  * @param knownEventTypes - event types understood by the installed current Session package.
  * @param relationshipHeaderVersion - logical generation whose version-sensitive relationships are checked.
+ * @param relationshipExtensions - validated surface placement supplied by the later format owner.
  * @returns the same validated artifact.
  */
 export function restoreReleasedV2Artifact(
   artifact: SessionFormatArtifact,
   knownEventTypes: ReadonlySet<string>,
   relationshipHeaderVersion: number = artifact.header.version,
+  relationshipExtensions: Pick<ReleasedRelationshipExtensions, 'firstSurfaceHeadSeq' | 'surfaceHeadSeqs' | 'surfaceCheckouts'> = {},
 ): SessionFormatArtifact {
-  validateReleasedV2Artifact(artifact, 'current', knownEventTypes, relationshipHeaderVersion)
+  validateReleasedV2Artifact(artifact, 'current', knownEventTypes, relationshipHeaderVersion, relationshipExtensions)
   return artifact
 }
 

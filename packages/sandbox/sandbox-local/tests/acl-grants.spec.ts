@@ -53,9 +53,10 @@ vi.mock('@deepseek-ai/dsh-sandbox-windows-acl', () => {
     registerAclDiagnosisSkill: vi.fn(),
     AclWriteGrant: MockAclWriteGrant,
     assertTempRootOutsideWorkspace: (workspaceRoot: string, tempRoot: string) => {
+      const sep = process.platform === 'win32' ? '\\' : '/'
       const workspace = realpathSync.native(workspaceRoot)
       const temp = realpathSync.native(tempRoot)
-      if (temp === workspace || temp.startsWith(`${workspace}${process.platform === 'win32' ? '\\' : '/'}`)) {
+      if (temp === workspace || temp.startsWith(workspace.endsWith(sep) ? workspace : `${workspace}${sep}`)) {
         throw new Error(`Windows ACL temp root must be outside the workspace: workspace=${workspaceRoot}; temp=${tempRoot}`)
       }
     },
@@ -261,10 +262,32 @@ describe('windows-acl write grants (LocalSandboxProvider)', () => {
 
   it('rejects a workspace containing the ambient temp root before any ACL mutation', async () => {
     const { sandbox } = await setup()
+    // The filesystem root contains every temp-root candidate (ambient and
+    // machine-level alike), so the fail-closed assertion still fires.
     await expect(sandbox.confine(['true'], {
-      mode: 'workspace-write', workspaceRoot: realpathSync.native(tmpdir()), sessionId: SessionId('overlap'),
+      mode: 'workspace-write', workspaceRoot: realpathSync.native('/'), sessionId: SessionId('overlap'),
     })).rejects.toThrow(/temp root must be outside the workspace/u)
     expect(mockState.grants).toHaveLength(0)
+  })
+
+  it.runIf(process.platform === 'win32')('roots the private temp under a machine-level directory when the workspace contains the ambient temp root', async () => {
+    try {
+      const { sandbox, fiber } = await setup()
+      // A user-profile workspace contains %LOCALAPPDATA%\Temp on Windows; the
+      // private temp must move outside it, never inside the workspace ACE.
+      const ws = realpathSync.native(tmpdir())
+      const confined = await sandbox.confine(['true'], {
+        mode: 'workspace-write', workspaceRoot: ws, sessionId: SessionId('profile-workspace'),
+      })
+      const tempDir = flag(confined.argv, '--temp') ?? ''
+      expect(tempDir.startsWith(ws)).toBe(false)
+      expect(existsSync(tempDir)).toBe(true)
+      expect(flag(confined.argv, '--temp-write-sid')).toBe(`TEMP:${tempDir}`)
+      await fiber.dispose()
+      expect(existsSync(tempDir)).toBe(false)
+    } finally {
+      cleanup()
+    }
   })
 
   it('temp grant creation/add failures remove the random directory; cleanup failures aggregate', async () => {
@@ -312,10 +335,12 @@ describe('windows-acl write grants (LocalSandboxProvider)', () => {
   it('agentless calls pass a temp root and no capabilities; the runner owns the private child lifecycle', async () => {
     try {
       const { sandbox, fiber } = await setup()
-      const confined = await sandbox.confine(['pwsh', '/Command', 'x'], { mode: 'workspace-write', workspaceRoot: '/ws' })
+      const ws = workspaceRoot()
+      scratch.push(ws)
+      const confined = await sandbox.confine(['pwsh', '/Command', 'x'], { mode: 'workspace-write', workspaceRoot: ws })
       expect(confined.argv).toEqual([
         'node', 'windows-acl-runner.js',
-        '--workspace', '/ws',
+        '--workspace', ws,
         '--temp', tmpdir(),
         '--mode', 'workspace-write',
         '--',

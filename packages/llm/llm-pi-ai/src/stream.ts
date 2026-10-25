@@ -9,11 +9,12 @@
  */
 
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, diagnosticFromProviderError, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow'
 import type { AssistantMessage, AssistantMessageEvent, Usage as PiUsage } from '@earendil-works/pi-ai'
 import { toPiReplayState } from './replay.ts'
+import type { WireFailureDiagnostic } from './diagnostic-fetch.ts'
 
 /**
  * Map pi-ai usage (reasoning folded into output by pi-ai).
@@ -47,6 +48,9 @@ function classifyPiAiError(message: string): string {
   // same request cannot succeed, so it is invalid, not transient.
   if (/\b413\b|failed to buffer the request body:\s*length limit exceeded|payload too large|request body too large/i.test(message)) return 'INVALID_REQUEST'
   if (/\b400\b|invalid.?request/i.test(message)) return 'INVALID_REQUEST'
+  // Unified gateway codes preserve the failed phase before the generic HTTP status.
+  if (/\bupstream_timeout\b/i.test(message)) return 'TIMEOUT'
+  if (/\bupstream_connection_error\b/i.test(message)) return 'TRANSPORT'
   if (/\b5\d\d\b/.test(message)) return 'SERVER'
   if (/\btime(?:d)?\s*out\b|timeout/i.test(message)) return 'TIMEOUT'
   // A stream truncated before the provider's terminal event: each pi-ai provider
@@ -122,7 +126,10 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
     }
     case 'error': {
       const text = message.errorMessage ?? 'pi-ai stream error'
-      return { kind: 'error', failure: { message: text, code: classifyPiAiError(text) } }
+      const parsed = diagnosticFromProviderError(text)
+      if (parsed.invalid) return { kind: 'error', failure: { code: 'CENTRAL_DIAGNOSTIC_INVALID', message: '中央模型诊断无效；原请求结果待核，不重新提交。', diagnostic: { version: 1, domain: 'model', code: 'CENTRAL_DIAGNOSTIC_INVALID', stage: 'diagnostic_decode', fieldPath: null, retryable: false, effect: 'unknown', requestId: null } } }
+      return { kind: 'error', failure: { message: parsed.diagnostic ? '模型请求未完成；请根据公开阶段和原请求身份先核实结果。' : text,
+        code: classifyPiAiError(text), ...parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {} } }
     }
   }
 }
@@ -144,6 +151,7 @@ export async function* toStreamChunks(
   contextWindow?: number,
   callerSignal?: AbortSignal,
   requestedModel?: string,
+  wireDiagnostic?: () => WireFailureDiagnostic,
 ): AsyncGenerator<StreamChunk> {
   // pi-ai contentIndex ↔ our block index map 1:1 (both count blocks from 0
   // in stream order), but we track ids per index for tool calls.
@@ -217,12 +225,24 @@ export async function* toStreamChunks(
         // In-stream error delivery (pi-ai's style) → error finish chunk
         // (the harness's other sanctioned error path besides throwing).
         yield { type: 'usage', usage: mapUsage(event.error.usage) }
+        const originalReason = mapStopReason(
+          callerSignal?.aborted ? { ...event.error, stopReason: 'aborted' } : event.error,
+          contextWindow,
+        )
+        const wire = wireDiagnostic?.()
+        let reason = originalReason
+        if ((originalReason.kind === 'error' || originalReason.kind === 'aborted') && wire) {
+          // 任一无效typed诊断优先于同流早先的valid值，不能继承旧的可重试许可。
+          const diagnostic = wire.invalid ? { version: 1 as const, domain: 'model' as const,
+            code: 'CENTRAL_DIAGNOSTIC_INVALID', stage: 'diagnostic_decode', fieldPath: null, retryable: false,
+            effect: 'unknown' as const, requestId: null } : wire.diagnostic
+          if (diagnostic) reason = { ...originalReason, failure: { ...originalReason.failure,
+            code: wire.invalid && originalReason.kind !== 'aborted' ? 'CENTRAL_DIAGNOSTIC_INVALID' : originalReason.failure.code,
+            message: '模型请求未完成；请根据公开阶段和原请求身份先核实结果。', diagnostic } }
+        }
         yield {
           type: 'finish',
-          reason: mapStopReason(
-            callerSignal?.aborted ? { ...event.error, stopReason: 'aborted' } : event.error,
-            contextWindow,
-          ),
+          reason,
         }
         return
       // no default: AssistantMessageEvent is pi-ai's closed union; a new

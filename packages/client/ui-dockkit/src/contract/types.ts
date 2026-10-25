@@ -91,6 +91,8 @@ export type LayoutNode = SplitNode | PaneNode
  * sharing it are deliberate copies of one thing.
  */
 export interface TabRecord {
+  /** A fixed product page that cannot close, move, or float. */
+  readonly pinned?: boolean
   readonly id: TabId
   readonly kind: string
   readonly contentId: string

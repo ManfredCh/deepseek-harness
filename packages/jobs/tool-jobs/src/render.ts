@@ -11,6 +11,7 @@ import type { JobChunk, JobView } from '@deepseek-ai/dsh-jobs/view'
 /** Job state safe for model-authored programs; ownership and offsets are omitted. */
 export interface PublicJobSnapshot {
   id: string
+  registryId?: string
   kind: string
   label: string
   status: JobView['status']
@@ -39,6 +40,7 @@ export function publicJob(job: JobView): PublicJobSnapshot {
   const detail = jobDetail(job)
   return {
     id: job.id,
+    ...job.registryId !== undefined ? { registryId: job.registryId } : {},
     kind: job.kind,
     label: job.label,
     status: job.status,

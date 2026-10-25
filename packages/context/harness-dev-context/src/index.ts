@@ -11,6 +11,7 @@
 
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-web-app'
@@ -23,6 +24,23 @@ export const name = 'harness-dev-context'
 
 /** Prompt registries, the projection registry, and the Web GUI whose URL the model learns. */
 export const inject = ['systemPrompt', 'sessionProjections', 'webApp']
+
+/**
+ * Interface orientation choices for deployments that ship the harness under a
+ * product name instead of the development checkout.
+ */
+export interface Config {
+  /**
+   * `developer` registers the implementation-checkout section and the
+   * dev-workflow Web guidance; `product` states only the shipped interface
+   * facts and leaves the checkout unnamed.
+   */
+  readonly presentation: 'developer' | 'product'
+}
+
+export const Config: z<Config> = z.object({
+  presentation: z.union(['developer', 'product']).default('developer'),
+})
 
 /** This installation's root, four directories above this package's source or built entry. */
 const SOURCE_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -49,6 +67,12 @@ const WEB_SURFACE_GUIDANCE = 'When the user refers to "this page", "this GUI", o
   + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.'
 
 const WEB_SURFACE_PROMPT = `You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. ${WEB_SURFACE_GUIDANCE}`
+
+const PRODUCT_WEB_SURFACE_PROMPT = 'The current interface is Lyapunov. '
+  + 'Resolve references such as "here", "the current scene", or "the selected object" from this session\'s latest workbench facts. '
+  + 'An interface acknowledgement does not prove that the displayed image changed; '
+  + 'use a real observation from the same window when visual judgement is needed. '
+  + 'If no valid window or state is available, report the specific missing information.'
 
 /**
  * Fixed text around the value in each paragraph that embedded it, frozen as
@@ -125,7 +149,7 @@ const ADMITS_NOTHING: LegacyPrompt = { source: null, web: null }
  * projection that keeps a Session's admitted paragraphs.
  * @param ctx - plugin context with every {@link inject} service.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
   ctx.sessionProjections.register({
     key: LEGACY_PROMPT,
     stateVersion: 1,
@@ -138,23 +162,27 @@ export function apply(ctx: Context): void {
     // This plugin registers the unit above, so its state exists for every Session.
     return session === undefined ? ADMITS_NOTHING : ctx.sessionProjections.stateOf(session, LEGACY_PROMPT) as LegacyPrompt
   }
-  ctx.systemPrompt.section({
-    name: HARNESS_SOURCE,
-    order: ctx.systemPrompt.getSectionOrder('HARNESS_SOURCE'),
-    interpolate: false,
-    text: context => admitted(context).source ?? HARNESS_SOURCE_PROMPT,
-  })
-  ctx.systemPrompt.context({
-    name: HARNESS_SOURCE,
-    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE'),
-    interpolate: false,
-    text: `Current DeepSeek Harness implementation checkout: ${JSON.stringify(SOURCE_ROOT)}.`,
-  })
+  if (config.presentation !== 'product') {
+    ctx.systemPrompt.section({
+      name: HARNESS_SOURCE,
+      order: ctx.systemPrompt.getSectionOrder('HARNESS_SOURCE'),
+      interpolate: false,
+      text: context => admitted(context).source ?? HARNESS_SOURCE_PROMPT,
+    })
+    ctx.systemPrompt.context({
+      name: HARNESS_SOURCE,
+      order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE'),
+      interpolate: false,
+      text: `Current DeepSeek Harness implementation checkout: ${JSON.stringify(SOURCE_ROOT)}.`,
+    })
+  }
   ctx.systemPrompt.section({
     name: WEB_SURFACE,
     order: ctx.systemPrompt.getSectionOrder('WEB_SURFACE'),
     interpolate: false,
-    text: context => admitted(context).web ?? WEB_SURFACE_PROMPT,
+    text: context => config.presentation === 'product'
+      ? PRODUCT_WEB_SURFACE_PROMPT
+      : admitted(context).web ?? WEB_SURFACE_PROMPT,
   })
   ctx.systemPrompt.context({
     name: WEB_SURFACE,

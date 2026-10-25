@@ -25,13 +25,15 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-当组合需要通过 pi-ai 的提供方目录、或通过 pi-ai 已安装目录未描述的网关路由模型请求时挂载本插件。`providers` 字典就是整个配置面：每个键都是请求用 `GenerateOptions.provider` 选择的提供方路由名。
+当组合需要通过 pi-ai 的提供方目录、或通过 pi-ai 已安装目录未描述的网关路由模型请求时挂载本插件。`providers` 字典持有 provider 配置：每个键都是请求用 `GenerateOptions.provider` 选择的提供方路由名。
 
 适配器接受 LLM 服务的[仅供请求使用的 user 输入](../llm/README.zh.md#use-this-package)，并可将其与持久历史混用。user 身份与来源不会进入 pi-ai 内容；assistant 回放元数据和工具调用关联仍由持久消息携带。
 
 ### 何时选择
 
 当同一组合服务多个提供方、某条路由需要 pi-ai 目录默认值并修正少数字段、或必须通过自有端点与协议到达手工声明网关时，选择本适配器。当部署不需要其他提供方时，选择 `dsh-llm-deepseek` 直连 DeepSeek 路由。两个适配器可以同时挂载，因为它们的路由名不冲突；注册其他适配器已拥有的路由会导致插件加载失败。
+
+组合可用 `requireCompositionPolicy: true` 要求自己的 `llmPiAiPolicy`。该 owner 在原生配置事务中检查 `providers.get()` 的原始记录，在注册前检查实际路由，在 Fetch 前检查发现地址，并在读取凭据前检查模型的冻结地址。关闭 ambient 凭据也关闭提供方原生环境／文件回退与登录流程。`managedBaseURL` 由组合固定：设置不能删除或更改该地址；发现请求不跟随重定向；不同的草稿地址不获得存储凭据或部署 headers。
 
 ### 配置提供方路由
 

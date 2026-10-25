@@ -30,6 +30,7 @@ import { EMPTY_CHAT_SNAPSHOT } from './contract/snapshot.ts'
 import { ApprovalCommand } from './chat/ApprovalCommand.tsx'
 import { ChatView } from './chat/ChatView.tsx'
 import { ChatFlow } from './chat/ChatFlow.tsx'
+import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
 import { registerChatNodeRenderers } from './chat/register-node-renderers.ts'
 import { UserContent } from './chat/UserContent.tsx'
 import { ActivityPill, UsagePill } from './chat/StatsPills.tsx'
@@ -136,6 +137,32 @@ export function apply(ctx: Context): void {
   const t = ctx.locale.bind(NS)
   const chatStore = createChatStore()
   const chatScrollPositions = new Map<SessionId, ChatScrollPosition>()
+  const messageNavigation = new Map<SessionId, (direction: -1 | 1) => void>()
+  ctx.inject(['shortcuts'], (scope) => {
+    for (const direction of [-1, 1] as const) {
+      const code = direction === -1 ? 'BracketLeft' : 'BracketRight'
+      scope.effect(() => scope.shortcuts.register({
+        id: `chat.message.${direction === -1 ? 'previous' : 'next'}` as ShortcutCommandId,
+        label: () => t(direction === -1 ? 'shortcut.previousMessage' : 'shortcut.nextMessage'), aliases: [],
+        defaults: {
+          'desktop:macos': { code, modifiers: ['primary', 'alt'] },
+          'desktop:windows': { code, modifiers: ['primary', 'alt'] },
+          'desktop:linux': { code, modifiers: ['primary', 'alt'] },
+          'web:macos': { code, modifiers: ['primary', 'alt'] },
+          'web:windows': { code, modifiers: ['primary', 'alt'] },
+          'web:linux': { code, modifiers: ['primary', 'alt'] },
+        }, regions: ['page', 'editable'], modals: [],
+        resolve: ({ target }) => {
+          if (target !== null && target.closest('.monaco-editor') !== null) return { status: 'pass' }
+          const sessions = ctx.sessions.list.getSnapshot()
+          const id = sessions.ids.find(id => (sessions.byId[id]?.retainedBy.mainView ?? 0) > 0)
+          const navigate = id === undefined ? undefined : messageNavigation.get(id)
+          return navigate === undefined ? { status: 'pass' } : { status: 'handled', run: () => { navigate(direction) } }
+        },
+      }), `ui-chat: authored message ${direction}`)
+    }
+  })
+
   const chatSettings = ctx.configForms.get<ChatSettings>(CHAT_SETTINGS_NAMESPACE)
   const linkOpening = createSnapshotStore(chatSettings.getSnapshot().value?.linkOpening ?? DEFAULT_LINK_OPENING)
   ctx.effect(() => chatSettings.subscribe(() => {
@@ -242,6 +269,10 @@ export function apply(ctx: Context): void {
         const chat = chatSource(binding)
         return {
           ...nodeSources(binding),
+          bindMessageNavigation: (navigate) => {
+            messageNavigation.set(sessionId, navigate)
+            return () => { if (messageNavigation.get(sessionId) === navigate) messageNavigation.delete(sessionId) }
+          },
           fileMentions: (owner: TurnTailOwnerProps) => ctx.get('chatFileMentions')?.forClosing(owner, sessionId),
           // Files open in the right Sidebar, not in a desktop application: the
           // content stays in the product, beside the conversation that produced

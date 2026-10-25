@@ -18,6 +18,8 @@ import type { ModelCatalogDirectory } from './catalog.ts'
 export interface ModelDirectoryState {
   /** Saved selection, retained even when its provider or model leaves the catalog. */
   current: ModelSelection | null
+  /** Presentation from an explicitly empty Host default, without provider policy. */
+  manualOnlyPresentation?: 'guest'
   /** Saved effort caption retained when the selected model is unavailable. */
   retainedEffort?: string
   /** Whether the current selection is present in the available catalog; null while unresolved. */
@@ -159,7 +161,7 @@ export class ModelDirectory {
     const catalog = this.catalog.store.getSnapshot()
     const projected = modelSelectionProjection(this.projected.getSnapshot())
     const intended = projected?.next ?? catalog.value?.default
-    const reasoning = intended === undefined ? undefined : this.catalog.reasoningFor(intended)
+    const reasoning = intended == null ? undefined : this.catalog.reasoningFor(intended)
     const effort = intended?.reasoningEffort ?? reasoning?.defaultEffort
     const retainedEffort = effort === undefined ? undefined
       : reasoning?.efforts.find(level => level.id === effort)?.name ?? effort
@@ -176,11 +178,13 @@ export class ModelDirectory {
       })
       return
     }
-    const selection = projected.next ?? catalog.value.default
-    const routable = catalog.value.groups.some(group => group.id === selection.provider
+    const selection = catalog.value.default === null ? null : projected.next ?? catalog.value.default
+    const routable = selection !== null && catalog.value.groups.some(group => group.id === selection.provider
       && group.models.some(model => model.id === selection.model))
     this.store.set({
       current: selection,
+      ...catalog.value.default === null && catalog.value.manualOnlyPresentation === 'guest'
+        ? { manualOnlyPresentation: 'guest' as const } : {},
       ...retainedEffort === undefined ? {} : { retainedEffort },
       routable,
       groups: catalog.value.groups,

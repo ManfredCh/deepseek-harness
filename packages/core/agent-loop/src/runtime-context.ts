@@ -8,7 +8,7 @@
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, ContextSnapshotSection, Message } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionSeq, SurfaceIntent, SystemMessage, UserMessage } from '@deepseek-ai/dsh-session'
-import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session'
+import { isReplacementSurfaceEvent, selectActiveHistoryEvents } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -26,6 +26,43 @@ function isOwned(message: UserMessage): boolean {
 function textOf(message: Message): string | undefined {
   const [block] = message.content
   return message.content.length === 1 && block?.type === 'text' ? block.text : undefined
+}
+
+/** Current-state owners may replace their own snapshots; user input and tool results stay intact. */
+function snapshotKey(message: Message): string | undefined {
+  if (message.role !== 'user') return
+  const source = message.source as { kind: string; plugin?: string; form?: string }
+  if (source.kind === 'user' || source.kind === 'tool' || source.kind === 'model') return
+  if (source.kind === SOURCE
+    || source.kind === 'plugin:@deepseek-ai/dsh-system-prompt' && source.form === 'snapshot'
+    || source.kind === 'skill-catalog' && source.form === 'catalog'
+    || source.kind === 'lyapunov-domain-pointer') return source.kind
+}
+
+/** Replace one surviving node of the same current-state owner, retaining every raw event. */
+export function contextSnapshotIntent(session: Session, message: UserMessage): SurfaceIntent<'user/message'> {
+  const key = snapshotKey(message)
+  if (key === undefined) return { surfaceOp: 'append' }
+  for (const seq of session.surface.nodes.toReversed()) {
+    // oxlint-disable-next-line typescript/no-deprecated -- Existing Session surface read.
+    const event = session.eventAt(seq)
+    if (event?.type !== 'user/message' || snapshotKey(event.data) !== key) continue
+    if (event.data.content.some(block => block.type !== 'text')) return { surfaceOp: 'append' }
+    return { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] }
+  }
+  return { surfaceOp: 'append' }
+}
+
+/** Older resumed logs can contain append-only snapshots; publish only their latest complete value. */
+export function currentContextMessages(messages: readonly Message[]): Message[] {
+  const latest = new Map<string, number>()
+  messages.forEach((message, index) => { const key = snapshotKey(message); if (key !== undefined) latest.set(key, index) })
+  return messages.flatMap((message, index) => {
+    const key = snapshotKey(message)
+    if (key === undefined || latest.get(key) === index) return [message]
+    const content = message.content.filter(block => block.type !== 'text')
+    return content.length === 0 ? [] : [{ ...message, content } as Message]
+  })
 }
 
 /** One uncommitted system-prompt surface operation for request admission or reconciliation. */
@@ -51,7 +88,7 @@ export interface SystemPromptDecisionInput {
 /** Committed events from the newest backward; the restore scans stop at the first match. */
 function eventsNewestFirst(session: Session): readonly SessionEvent[] {
   // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
-  return session.snapshotEvents().toReversed()
+  return selectActiveHistoryEvents(session.snapshotEvents()).toReversed()
 }
 
 /**
@@ -121,18 +158,23 @@ export class RuntimeContextProjection {
    * @param session - session receiving projected messages.
    */
   constructor(ctx: Context, session: Session) {
-    const surface = new Set(session.surface.nodes)
-    for (const event of eventsNewestFirst(session)) {
-      if (event.type !== 'user/message' || !isOwned(event.data)) continue
-      this.retained ??= null
-      if (surface.has(event.seq)) {
-        this.retained = { seq: event.seq, text: textOf(event.data) }
-        break
+    const restore = () => {
+      this.retained = undefined
+      const surface = new Set(session.surface.nodes)
+      for (const event of eventsNewestFirst(session)) {
+        if (event.type !== 'user/message' || !isOwned(event.data)) continue
+        this.retained ??= null
+        if (surface.has(event.seq)) {
+          this.retained = { seq: event.seq, text: textOf(event.data) }
+          break
+        }
       }
     }
+    restore()
 
     ctx.on('session/event', (subject, event) => {
       if (subject !== session) return
+      if (event.type === 'session/history-checkout') { restore(); return }
       if (event.type === 'user/message' && isOwned(event.data)) {
         this.retained = { seq: event.seq, text: textOf(event.data) }
       } else if (this.retained

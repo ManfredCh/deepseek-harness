@@ -18,12 +18,21 @@
 import { Client, type Transport } from '@modelcontextprotocol/client'
 import type { Context } from '@deepseek-ai/cordis'
 import { assertNever, type JsonValue } from '@deepseek-ai/dsh-util-values'
+import { scopeOf } from '@deepseek-ai/dsh-scope'
 import type { ServerContext } from './server-context.ts'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport } from './transport.ts'
 import { syncTools } from './tools.ts'
 import type { ToolBridgeOptions, ToolDisposers } from './tools.ts'
 import type { Config } from './index.ts'
+
+/** 供产品资源/提示词扩展使用的同连接RPC；连接、重连与释放仍由本Provider独占。 */
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'mcp/content-request'(request: { serverName: string; ownerScope?: object; method: 'listServers' | 'listResources' | 'readResource' | 'listResourceTemplates' | 'listPrompts' | 'getPrompt'; params: Record<string, unknown>; signal: AbortSignal }, next: () => Promise<unknown>): Promise<unknown>
+  }
+}
+
 
 /** Automatic reconnect policy for one MCP server connection. */
 export interface ReconnectConfig {
@@ -36,6 +45,10 @@ export interface ReconnectConfig {
   /** Consecutive failed attempts per outage before giving up for good (default 10). */
   maxAttempts?: number
 }
+
+import { auth, UnauthorizedError } from '@modelcontextprotocol/client'
+import { scopeTarget } from '@deepseek-ai/dsh-scope'
+import type { OAuthClientProvider } from './oauth.ts'
 
 /** Defaults shared by the Config schema and {@link resolveReconnectPolicy}. */
 export const RECONNECT_DEFAULTS: Required<ReconnectConfig> = Object.freeze({
@@ -99,6 +112,14 @@ export interface ConnectionOutcome {
   error?: unknown
 }
 
+/** Verifiable result of one {@link ConnectionHandle.dispose} attempt. */
+export interface ConnectionDisposal {
+  /** Whether every generation this handle owned confirmed transport closure. */
+  readonly closed: boolean
+  /** Diagnostic detail when closure was not confirmed. */
+  readonly reason?: string
+}
+
 /** Handle for one plugin instance's supervised connection. */
 export interface ConnectionHandle extends ServerContext {
   /**
@@ -113,6 +134,15 @@ export interface ConnectionHandle extends ServerContext {
    * unregister every tool this server still owns.
    */
   dispose(): Promise<void>
+  /**
+   * Outcome of this handle's disposal, or `undefined` before any disposal work
+   * or failed-generation cleanup recorded one. Cordis contains effect failures
+   * while unloading a fiber, so a consumer that must know whether the transport
+   * actually closed reads this accessor instead of trusting the disposal
+   * promise. An unconfirmed closure stays recorded for the handle's lifetime.
+   * @returns whether transport closure was confirmed, with its diagnostic.
+   */
+  disposal(): ConnectionDisposal | undefined
 }
 
 /**
@@ -142,6 +172,10 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   let disposed = false
   const maxInstructionBytes = config.maxInstructionBytes ?? DEFAULT_MAX_INSTRUCTION_BYTES
   let serverInstructions = ''
+  let paused = false
+  let awaitingAuthorization = false
+  let authProvider: OAuthClientProvider | undefined
+  let authProviderResolved = false
   /** Current generation: the connecting or connected client; undefined during backoff waits and after final failure. */
   let client: Client | undefined
   /** Transport-aware close operation paired with {@link client}. */
@@ -155,6 +189,36 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   let connectedAt: number | undefined
   /** The real error from the first connection attempt, for startup-await diagnostics. */
   let firstAttemptError: unknown
+  /** Verifiable disposal outcome; an unconfirmed closure stays recorded. */
+  let disposalOutcome: ConnectionDisposal | undefined
+
+  /** Record once that an owned generation's transport closure was never confirmed. */
+  function recordUnconfirmed(reason: string): void {
+    disposalOutcome ??= { closed: false, reason }
+  }
+
+  // 只暴露按需资源/提示词RPC，不暴露可变Client、不创建第二条连接或执行提示内容。
+  ctx.on('mcp/content-request', async (request, next) => {
+    if (request.ownerScope !== scopeOf(ctx)) return next()
+    if (request.method === 'listServers') {
+      const rest = await next() as unknown[] | undefined
+      const connected = !disposed && client !== undefined && connectedAt !== undefined
+      return [...rest ?? [], { serverName: config.serverName, status: connected ? 'connected' : 'unavailable', capabilities: connected ? client!.getServerCapabilities() ?? {} : {} }]
+    }
+    if (request.serverName !== config.serverName) return next()
+    const current = client
+    if (disposed || current === undefined || connectedAt === undefined) {
+      throw new Error(`MCP_PROVIDER_UNAVAILABLE: ${config.serverName}`)
+    }
+    const options = { signal: request.signal, timeout: config.toolCallTimeoutMs }
+    switch (request.method) {
+      case 'listResources': return current.listResources(request.params, options)
+      case 'readResource': return current.readResource(request.params as Parameters<Client['readResource']>[0], options)
+      case 'listResourceTemplates': return current.listResourceTemplates(request.params, options)
+      case 'listPrompts': return current.listPrompts(request.params, options)
+      case 'getPrompt': return current.getPrompt(request.params as Parameters<Client['getPrompt']>[0], options)
+    }
+  })
 
   /** A generation may act only while it is the current one on a live plugin. */
   const isCurrent = (generation: Client): boolean => !disposed && client === generation
@@ -188,9 +252,11 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   function settleFailedGeneration(generation: Client, quiesced: boolean): void {
     if (!isCurrent(generation)) return
     if (!quiesced) {
-      client = undefined
-      closeClient = undefined
-      ctx.logger.error(`${label}: failed generation could not confirm transport closure — reconnect stopped to avoid overlapping server processes; reload the plugin or restart the Host to retry`)
+      paused = true
+      connectedAt = undefined
+      const reason = `${label}: failed generation could not confirm transport closure — reconnect stopped to avoid overlapping server processes; reload the plugin or restart the Host to retry`
+      recordUnconfirmed(reason)
+      ctx.logger.error(reason)
       return
     }
     generationDown(generation)
@@ -209,6 +275,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   }
 
   function scheduleReconnect(): void {
+    if (paused || awaitingAuthorization || disposed) return
     const lostEstablishedConnection = connectedAt !== undefined
     if (!policy.enabled) {
       const message = lostEstablishedConnection
@@ -304,7 +371,17 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     }
     let instructions: string
     try {
-      transport = createTransport(config)
+      if (config.transport !== 'stdio' && config.oauth && !authProviderResolved) {
+        const oauthConfig = config.oauth === true ? {} : config.oauth
+        authProvider = await ctx.waterfall(scopeTarget({}, scopeOf(ctx)), 'mcp/oauth-provider', {
+          owner: ctx, serverName: config.serverName, serverUrl: config.url, config: oauthConfig,
+          authorize: (provider, code) => auth(provider, { serverUrl: config.url, ...(code !== undefined ? { authorizationCode: code } : {}), ...(oauthConfig.scope ? { scope: oauthConfig.scope } : {}) }),
+          control: controlAuthorization,
+        }, () => Promise.resolve(undefined))
+        if (!authProvider) throw new Error('MCP_OAUTH_PROVIDER_UNAVAILABLE: install the product OAuth credential adapter')
+        authProviderResolved = true
+      }
+      transport = createTransport(config, authProvider?.forTransport?.() ?? authProvider)
       await generation.connect(transport)
       if (hasClosed()) {
         attemptSettled = true
@@ -312,7 +389,10 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
         return
       }
       if (!isCurrent(generation)) {
-        if (!await closeGeneration()) ctx.logger.error(incompleteDisposalMessage)
+        if (!await closeGeneration()) {
+          recordUnconfirmed(incompleteDisposalMessage)
+          ctx.logger.error(incompleteDisposalMessage)
+        }
         return
       }
       const serverText = generation.getInstructions()?.trimEnd() ?? ''
@@ -322,6 +402,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       }
       await enqueueSync(generation, startup ? startupOpts : opts)
     } catch (error) {
+      if (authProvider && error instanceof UnauthorizedError) awaitingAuthorization = true
       if (firstAttemptError === undefined) firstAttemptError = error
       // Disposal clears current ownership before it closes the generation, so
       // only a live supervisor reports an attempt failure.
@@ -339,23 +420,54 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     if (!isCurrent(generation)) return
     serverInstructions = instructions
     connectedAt = Date.now()
+    awaitingAuthorization = false
     if (failedAttempts > 0) ctx.logger.info(`${label}: reconnected and re-synced tools (attempt ${failedAttempts}/${policy.maxAttempts})`)
   }
 
   /** The in-flight (or last settled) connection attempt; dispose awaits it for quiescence. */
   let settling = connectGeneration(true)
+  let authControl: Promise<void> = Promise.resolve()
+  /** Pause/restart this same supervisor after credential changes; never create a competing client owner. */
+  function controlAuthorization(action: 'pause' | 'reconnect'): Promise<void> {
+    const next = authControl.catch(() => {}).then(async () => {
+      if (disposed) throw new Error('MCP_PROVIDER_UNAVAILABLE: ' + config.serverName)
+      paused = true
+      if (reconnectTimer !== undefined) { clearTimeout(reconnectTimer); reconnectTimer = undefined }
+      await settling
+      const close = closeClient
+      connectedAt = undefined
+      serverInstructions = ''
+      await syncChain
+      for (const dispose of disposers.values()) dispose()
+      disposers = new Map()
+      if (close !== undefined && !await close()) {
+        recordUnconfirmed(`${label}: authorization control could not confirm transport closure`)
+        throw new Error('MCP_CONNECTION_CLOSE_TIMEOUT')
+      }
+      client = undefined
+      closeClient = undefined
+      if (disposed) throw new Error('MCP_PROVIDER_UNAVAILABLE: ' + config.serverName)
+      if (action === 'reconnect') {
+        paused = false; awaitingAuthorization = false; failedAttempts = 0
+        settling = connectGeneration(false)
+        await settling
+        if (connectedAt === undefined) throw new Error('MCP_AUTH_RECONNECT_FAILED: ' + config.serverName, { cause: firstAttemptError })
+      }
+    })
+    authControl = next
+    return next
+  }
 
   // The ready promise settles when the first attempt finishes (regardless of
   // success). If the first attempt fails and reconnect is enabled, the
   // supervisor is already scheduling a retry — ready just reports the outcome.
   const ready: Promise<ConnectionOutcome> = settling.then(() => {
-    // After settling: if client is set the initial connect+sync succeeded.
-    // If not, the supervisor either scheduled a retry (error logged) or gave
-    // up (error logged). Either way the outcome is reported with the real error.
+    // A retained failed generation still owns cleanup but is not ready.
+    // Only synchronized tools or the explicit authorization wait admit startup.
     // Note: settling.then() is a microtask; stdio onclose is a macrotask — so
     // a server that crashes AFTER a successful initial sync cannot flip client
     // to undefined before this continuation runs.
-    if (client !== undefined) return {}
+    if (connectedAt !== undefined || awaitingAuthorization) return {}
     /* v8 ignore next -- defensive: firstAttemptError is always set when connect/sync fails */
     return { error: firstAttemptError ?? new Error(`${label}: initial connection failed`) }
   })
@@ -394,16 +506,25 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       }
       const close = closeClient
       client = undefined
-      closeClient = undefined
+      let closed = true
       if (close !== undefined && !await close()) {
+        closed = false
+        recordUnconfirmed(incompleteDisposalMessage)
         ctx.logger.error(incompleteDisposalMessage)
       }
+      if (closed) closeClient = undefined
       // Quiesce, don't just request it: the in-flight attempt enqueues its
       // sync before settling, so awaiting both leaves `disposers` final.
       await settling
       await syncChain
       for (const dispose of disposers.values()) dispose()
       disposers = new Map()
+      // A closure this handle confirmed stays confirmed; recordUnconfirmed keeps
+      // any earlier unconfirmed generation instead of overwriting it.
+      if (closed) disposalOutcome ??= { closed: true }
+    },
+    disposal(): ConnectionDisposal | undefined {
+      return disposalOutcome
     },
   }
 }

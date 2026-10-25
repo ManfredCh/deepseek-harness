@@ -11,6 +11,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import McpResources from '@deepseek-ai/dsh-mcp-resources'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Config } from '@deepseek-ai/dsh-mcp-client'
+import type { McpOAuthBridgeRequest, OAuthClientProvider } from '../src/oauth.ts'
 
 // ---- Mock MCP SDK ----
 
@@ -55,7 +56,7 @@ vi.mock('@modelcontextprotocol/client/stdio', () => ({
 
 // vi.mock is hoisted above static imports, so the modules under test see the
 // mocked SDK even through a static import.
-import { apply } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
+import { apply, connectionHandleOf } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
 import { RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from '@deepseek-ai/dsh-mcp-client/src/connection.ts'
 
 // ---- Helpers ----
@@ -101,6 +102,20 @@ function stdioConfig(reconnect?: Config['reconnect']): Config {
     failOnStartupError: false,
     ...reconnect === undefined ? {} : { reconnect },
   }
+}
+
+function authorizationControl(ctx: Context): McpOAuthBridgeRequest['control'] {
+  let control!: McpOAuthBridgeRequest['control']
+  ctx.on('mcp/oauth-provider', async (request) => {
+    control = request.control
+    return {
+      redirectUrl: 'https://fixture.test/callback',
+      clientMetadata: { redirect_uris: ['https://fixture.test/callback'] },
+      clientInformation: () => undefined, tokens: () => undefined,
+      saveTokens() {}, redirectToAuthorization() {}, saveCodeVerifier() {}, codeVerifier: () => '',
+    } satisfies OAuthClientProvider
+  })
+  return action => control(action)
 }
 
 /** The tool list the mock server advertises after a successful (re)connect. */
@@ -364,8 +379,169 @@ describe('reconnect supervisor', () => {
       expect(mockListTools).toHaveBeenCalledTimes(phase === 'connect' ? 0 : 1)
       expect(ctx.tools.get('mcp__srv__late')).toBeUndefined()
       expect(errors.some(line => line.includes('server shutdown may be incomplete'))).toBe(true)
+      // The general disposal promise still resolves, so a consumer that must
+      // verify release reads the owner's recorded outcome instead.
+      expect(handle.disposal()).toMatchObject({
+        closed: false,
+        reason: expect.stringContaining('server shutdown may be incomplete'),
+      })
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('exposes a verifiable confirmed closure to a consumer that mounts the plugin itself', async () => {
+    const fiber = ctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, stdioConfig())
+    await fiber
+    const handle = connectionHandleOf(fiber.ctx)
+    expect(handle).toBeDefined()
+    await fiber.dispose()
+    // Cordis contains fiber-teardown failures, so the mounting consumer reads the
+    // connection owner's outcome instead of trusting the disposal promise.
+    expect(handle!.disposal()).toEqual({ closed: true })
+  })
+
+  it('reports an unconfirmed transport closure through the mounted handle', async () => {
+    vi.useFakeTimers()
+    try {
+      const { errors } = captureLogs(ctx)
+      mockClose.mockResolvedValue(undefined)
+      const fiber = ctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, stdioConfig())
+      await vi.advanceTimersByTimeAsync(0)
+      await fiber
+      const handle = connectionHandleOf(fiber.ctx)
+      const disposing = fiber.dispose()
+      await vi.advanceTimersByTimeAsync(5_000)
+      await disposing
+
+      expect(errors.some(line => line.includes('server shutdown may be incomplete'))).toBe(true)
+      expect(handle?.disposal()).toMatchObject({
+        closed: false,
+        reason: expect.stringContaining('server shutdown may be incomplete'),
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retains and retries an unconfirmed generation without changing its recorded outcome', async () => {
+    vi.useFakeTimers()
+    try {
+      mockConnect.mockRejectedValue(new Error('initialize failed'))
+      mockClose.mockResolvedValue(undefined)
+      const handle = startConnection(ctx, stdioConfig(), resolveReconnectPolicy(undefined, 'reconnect'))
+      await vi.advanceTimersByTimeAsync(5_000)
+      await handle.ready
+      expect(handle.disposal()).toMatchObject({ closed: false })
+      expect((await handle.ready).error).toMatchObject({ message: 'initialize failed' })
+      const disposing = handle.dispose()
+      await vi.advanceTimersByTimeAsync(5_000)
+      await disposing
+      expect(mockClose).toHaveBeenCalledTimes(2)
+      expect(handle.disposal()).toMatchObject({ closed: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['pause', 'reconnect'] as const)('retains the authorization %s close handle and refuses a replacement without closure', async (action) => {
+    vi.useFakeTimers()
+    let handle: ReturnType<typeof startConnection> | undefined
+    try {
+      const control = authorizationControl(ctx)
+      const config: Config = { transport: 'streamable-http', serverName: 'srv', url: 'https://fixture.test/mcp', headers: {}, oauth: true, toolCallTimeoutMs: 60_000, failOnStartupError: true }
+      handle = startConnection(ctx, config, resolveReconnectPolicy({ enabled: false }, 'reconnect'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(await handle.ready).toEqual({})
+      mockClose.mockResolvedValue(undefined)
+      const rejected = expect(control(action)).rejects.toThrow('MCP_CONNECTION_CLOSE_TIMEOUT')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      expect(handle.disposal()).toMatchObject({ closed: false, reason: expect.stringContaining('authorization control') })
+      expect(ctx.tools.get('mcp__srv__remote')).toBeUndefined()
+      const retry = expect(control('reconnect')).rejects.toThrow('MCP_CONNECTION_CLOSE_TIMEOUT')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await retry
+      expect(mockClose).toHaveBeenCalledTimes(2)
+      expect(instances).toHaveLength(1)
+    } finally {
+      mockClose.mockImplementation(function (this: { onclose?: () => void }) { this.onclose?.(); return Promise.resolve() })
+      await handle?.dispose()
+      await ctx.fiber.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reconnects through authorization control only after the previous transport confirms closure', async () => {
+    const control = authorizationControl(ctx)
+    const config: Config = { transport: 'streamable-http', serverName: 'srv', url: 'https://fixture.test/mcp', headers: {}, oauth: true, toolCallTimeoutMs: 60_000, failOnStartupError: true }
+    const handle = startConnection(ctx, config, resolveReconnectPolicy({ enabled: false }, 'reconnect'))
+    try {
+      await handle.ready
+      const closed: PromiseWithResolvers<void> = Promise.withResolvers()
+      mockClose.mockImplementationOnce(function (this: { onclose?: () => void }) { return closed.promise.then(() => { this.onclose?.() }) })
+      const reconnecting = control('reconnect')
+      await vi.waitFor(() => { expect(mockClose).toHaveBeenCalledTimes(1) })
+      expect(instances).toHaveLength(1)
+      closed.resolve()
+      await reconnecting
+      expect(instances).toHaveLength(2)
+      expect(ctx.tools.get('mcp__srv__remote')).toBeDefined()
+      expect(handle.disposal()).toBeUndefined()
+    } finally {
+      await handle.dispose()
+      expect(handle.disposal()).toEqual({ closed: true })
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('reports a failed authorization replacement while retaining its unconfirmed close handle', async () => {
+    vi.useFakeTimers()
+    let handle: ReturnType<typeof startConnection> | undefined
+    try {
+      const control = authorizationControl(ctx)
+      const config: Config = { transport: 'streamable-http', serverName: 'srv', url: 'https://fixture.test/mcp', headers: {}, oauth: true, toolCallTimeoutMs: 60_000, failOnStartupError: true }
+      handle = startConnection(ctx, config, resolveReconnectPolicy({ enabled: false }, 'reconnect'))
+      await vi.advanceTimersByTimeAsync(0)
+      await handle.ready
+      const failure = new Error('raw authorization replacement failure')
+      mockConnect.mockRejectedValueOnce(failure)
+      mockClose.mockImplementationOnce(function (this: { onclose?: () => void }) { this.onclose?.(); return Promise.resolve() })
+      mockClose.mockResolvedValue(undefined)
+      const rejected = expect(control('reconnect')).rejects.toMatchObject({ message: 'MCP_AUTH_RECONNECT_FAILED: srv', cause: failure })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      expect(instances).toHaveLength(2)
+      expect(handle.disposal()).toMatchObject({ closed: false })
+      expect(ctx.tools.get('mcp__srv__remote')).toBeUndefined()
+    } finally {
+      mockClose.mockImplementation(function (this: { onclose?: () => void }) { this.onclose?.(); return Promise.resolve() })
+      await handle?.dispose()
+      await ctx.fiber.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not start an authorization replacement after disposal interrupts its close barrier', async () => {
+    const control = authorizationControl(ctx)
+    const config: Config = { transport: 'streamable-http', serverName: 'srv', url: 'https://fixture.test/mcp', headers: {}, oauth: true, toolCallTimeoutMs: 60_000, failOnStartupError: true }
+    const handle = startConnection(ctx, config, resolveReconnectPolicy({ enabled: false }, 'reconnect'))
+    const closed: PromiseWithResolvers<void> = Promise.withResolvers()
+    try {
+      await handle.ready
+      mockClose.mockImplementation(function (this: { onclose?: () => void }) { return closed.promise.then(() => { this.onclose?.() }) })
+      const rejected = expect(control('reconnect')).rejects.toThrow('MCP_PROVIDER_UNAVAILABLE')
+      await vi.waitFor(() => { expect(mockClose).toHaveBeenCalledTimes(1) })
+      const disposing = handle.dispose()
+      await vi.waitFor(() => { expect(mockClose).toHaveBeenCalledTimes(2) })
+      closed.resolve()
+      await Promise.all([rejected, disposing])
+      expect(instances).toHaveLength(1)
+      expect(handle.disposal()).toEqual({ closed: true })
+    } finally {
+      closed.resolve()
+      await handle.dispose()
+      await ctx.fiber.dispose()
     }
   })
 

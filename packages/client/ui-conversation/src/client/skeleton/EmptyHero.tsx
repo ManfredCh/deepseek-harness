@@ -7,7 +7,7 @@ import {
   FISH_LOGO_PATH, FISH_LOGO_VIEWBOX, IconChevronDownOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
-import type { ConversationContentProps } from '../contract/slots.ts'
+import type { ConversationContentProps, HeroHeadlineOwnerProps } from '../contract/slots.ts'
 import css from './HeroShell.module.css'
 
 /** The owner's locale seat type, passed to hero chrome as a plain prop. */
@@ -63,6 +63,8 @@ export function WorkspaceChip({ buttonRef, label, menuOpen = false, onClick, t }
 
 /** Hero chrome props. The workspace row rides the InputBar accessory hole, not here. */
 export interface HeroShellProps {
+  /** Current welcome identity, without touching the resident composer. */
+  sessionId?: HeroHeadlineOwnerProps['sessionId']
   /** The owner's locale seat, passed down as a plain prop. */
   t: HeroTranslate
   /** Authorized renderer for the hero brand-mark slot. */
@@ -129,7 +131,7 @@ function HeroFish({ hovering }: { hovering: boolean }) {
  * @param props - see {@link HeroShellProps}.
  * @returns the centered hero element tree.
  */
-export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
+export function HeroShell({ t, renderSlot, children, sessionId }: HeroShellProps) {
   const [hovering, setHovering] = useState(false)
   return (
     <div className={css.root}>
@@ -151,8 +153,7 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
           </span>
           <span className={css.titleGroup}>
             {/* Own element: keeps the headline text addressable apart from the badge. */}
-            <span>{t('hero.headline')}</span>
-            <span className={css.previewBadge}>{t('hero.preview')}</span>
+            {renderSlot('conversation.hero.headline', { sessionId }, { fallback: <><span>{t('hero.headline')}</span><span className={css.previewBadge}>{t('hero.preview')}</span></> })}
           </span>
         </div>
         <div className={css.body}>

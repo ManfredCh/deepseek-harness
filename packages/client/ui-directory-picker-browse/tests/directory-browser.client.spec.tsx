@@ -132,6 +132,17 @@ describe('DirectoryBrowser', () => {
     expect(screen.queryByRole('button', { name: '/' })).toBeNull()
   })
 
+  it('starts a file-surface browse at its absolute path and can navigate above the home without picking', async () => {
+    const b = mount({ initialPath: HOME, fullAncestry: true })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '/' })).toBeTruthy() })
+    expect(b.listDirectory).toHaveBeenCalledWith(HOME, expect.any(AbortSignal))
+    expect(screen.getByText(HOME)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '/' }))
+    await waitFor(() => { expect(b.listDirectory).toHaveBeenCalledWith('/', expect.any(AbortSignal)) })
+    await waitFor(() => { expect(screen.getByRole('listitem').textContent).toBe('home') })
+    expect(b.onOpen).not.toHaveBeenCalled()
+  })
+
   it('shows hidden entries when the toggle is on and hides them again on close', async () => {
     const b = mount()
     await waitFor(() => { expect(screen.getByRole('listitem')).toBeTruthy() })

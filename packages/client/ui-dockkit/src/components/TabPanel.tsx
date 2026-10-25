@@ -283,7 +283,7 @@ export function TabStrip({ state, pane, callbacks }: TabPanelProps): ReactNode {
                 // elsewhere fires no click, and its own operation carries focus.
                 onPointerDown={(event) => {
                   // A secondary press is the menu, never a drag.
-                  if (event.button === 2) return
+                  if (event.button === 2 || tab.pinned) return
                   callbacks.onTabPressed(tabId, event)
                 }}
                 onClick={(event) => {

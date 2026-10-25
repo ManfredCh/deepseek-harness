@@ -173,6 +173,11 @@ export class SessionCommandController {
             ? {}
             : { reasoningEffort: resolved.reasoningEffort }),
         }
+        // An opted-in empty composition must acquire its validated default
+        // before installing the Session selection. A failed write stays empty.
+        if (this.ctx.agentDefaultModel.optionalSelection() === undefined && this.ctx.agentDefaultModel.allowsEmptySelection) {
+          await this.ctx.agentDefaultModel.saveSelection(selected)
+        }
         this.agents.selectForNextRequest(agent, selected)
         void this.ctx.agentDefaultModel.saveSelection(selected).catch((error: unknown) => {
           this.ctx.logger.warn(
@@ -272,7 +277,7 @@ export class SessionCommandController {
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
     const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
     try {
-      const { provider, model } = this.ctx.agentDefaultModel.currentSelection()
+      const selected = this.ctx.agentDefaultModel.optionalSelection()
       await this.ctx.agents.create({
         sessionId: childId,
         seed,
@@ -285,7 +290,7 @@ export class SessionCommandController {
             ? {}
             : { agentPreset: composition.agentPreset }),
         },
-        agentOptions: { provider, model },
+        agentOptions: selected === undefined ? {} : { provider: selected.provider, model: selected.model },
         setup: composition.setup,
       })
     } catch (error) {
@@ -319,6 +324,10 @@ export class SessionCommandController {
   async prompt(request: SessionPromptRequest, source: MessageSource): Promise<SessionPromptValue> {
     const agent = await this.resolveAgent(request.sessionId)
     if (hasPromptRequest(agent, request.requestId)) return { accepted: true }
+    const defaultModel = this.ctx.get('agentDefaultModel')
+    if (defaultModel !== undefined && defaultModel.optionalSelection() === undefined) {
+      throw new RemoteError('session/model-not-configured', 'No model is configured. Configure your own provider in Models; local manual commands remain available.', {})
+    }
     const hasImage = request.content.some(part => part.type === 'image')
     const admit = async (): Promise<SessionPromptValue> => {
       try {

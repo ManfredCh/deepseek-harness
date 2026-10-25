@@ -189,6 +189,8 @@ V2 `session-log-deepseek/delivery-accepted` 若携带 `data.sessionFormatVersion
 
 迁移边保留历史请求含义与模型配置；它不保证提供方缓存命中，也不保证与原生 V3 录制字节相同。
 
+产品历史识别独立列出 Alpha4 写出的具体扩展，校验 log-only 标记及 payload，不修改冻结的官方 V0/V2/V3 词表。历史 surface 对 checkout 引用进行完整工具配对校验，并将已校验的系统头放置与 checkout surface 传给冻结的关系检查器；未传入这些显式扩展参数时，旧关系校验的默认语义保持原样。当前 V4 Session API 不能创建 V3 header，历史测试使用合成的 V3 JSON 数据。
+
 ## 已知限制与后续工作
 
 <a id="known-limitations-and-deferred-work"></a>

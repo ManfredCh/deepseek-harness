@@ -152,6 +152,25 @@ describe('harness-dev-context', () => {
     expect(disposed.contexts).toEqual([])
   })
 
+  it('product presentation states the shipped interface facts and no checkout', async () => {
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    provideWebServices(ctx)
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(HarnessDevContext, { presentation: 'product' })
+    const assembly = await ctx.systemPrompt.assemble()
+    expect(assembly.sections.some(entry => entry.name === 'harness:source')).toBe(false)
+    expect(assembly.contexts.some(entry => entry.name === 'harness:source')).toBe(false)
+    const surface = assembly.sections.find(entry => entry.name === 'app:web-surface')
+    expect(surface?.text).toBe('The current interface is Lyapunov. '
+      + 'Resolve references such as "here", "the current scene", or "the selected object" from this session\'s latest workbench facts. '
+      + 'An interface acknowledgement does not prove that the displayed image changed; '
+      + 'use a real observation from the same window when visual judgement is needed. '
+      + 'If no valid window or state is available, report the specific missing information.')
+    expect(surface?.text).not.toContain('HMR')
+    expect(surface?.text).not.toContain('pnpm')
+  })
+
   it.each([
     { route: 'replace-only', systemPromptUpdate: undefined },
     { route: 'in-history', systemPromptUpdate: 'in-history' as const },

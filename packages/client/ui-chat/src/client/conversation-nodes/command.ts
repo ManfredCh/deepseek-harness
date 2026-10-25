@@ -5,6 +5,8 @@ import type {
 import type { CompactionCheckpointSource } from '@deepseek-ai/dsh-compaction/checkpoint'
 import type {} from '@deepseek-ai/dsh-compaction/types'
 import type {} from '@deepseek-ai/dsh-commands/types'
+import type {CommandDisplayMetadata} from '@deepseek-ai/dsh-commands/types'
+function gestureKey(value:CommandDisplayMetadata):string|undefined{if(value?.kind!=='control-gesture'||!['update','final','stop'].includes(value.phase)||!Number.isSafeInteger(value.generation)||!Number.isSafeInteger(value.sequence)||[value.clientId,value.gestureId,value.worldId,value.entityId,value.jointName].some(s=>typeof s!=='string'||!s||s.length>256))return;return JSON.stringify([value.clientId,value.gestureId,value.worldId,value.generation,value.entityId,value.jointName])}
 import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type { ManualCompactionChatData } from '../contract/chat-nodes.ts'
 import { chatNode } from './common.ts'
@@ -38,6 +40,7 @@ function commandFromRun(match: ConversationMatch): CommandNode {
   const data = match.event.data
   return {
     kind: 'command',
+    ...data.display?{display:data.display}:{},
     seq: match.event.seq,
     time: match.event.time,
     commandId: data.commandId,
@@ -57,6 +60,7 @@ function commandFromDone(match: ConversationMatch, previous?: CommandNode): Comm
     : undefined
   return {
     kind: 'command',
+    ...data.display?{display:data.display}:{},
     seq: previous?.seq ?? match.event.seq,
     time: previous?.time ?? match.event.time,
     commandId: data.commandId,
@@ -68,6 +72,19 @@ function commandFromDone(match: ConversationMatch, previous?: CommandNode): Comm
       ...sourceEventSeq === undefined ? {} : { sourceEventSeq },
     },
   }
+}
+
+/** Fold one exact gesture from immutable matches; no timer grouping or replacement log. */
+export function gestureCommand(matches:readonly ConversationMatch[]):CommandNode|undefined {
+  const rows=new Map<CommandId,CommandNode>()
+  for(const match of matches){
+    if(match.event.type==='command/run')rows.set(match.event.data.commandId,commandFromRun(match))
+    else if(match.event.type==='command/done')rows.set(match.event.data.commandId,commandFromDone(match,rows.get(match.event.data.commandId)))
+  }
+  const ordered=[...rows.values()].filter(node=>node.display).sort((a,b)=>a.display!.sequence-b.display!.sequence)
+  const latest=ordered.at(-1),first=matches[0]
+  if(!latest||!first)return
+  return {...latest,seq:first.event.seq,time:first.event.time,gestureHistory:ordered.map(node=>({commandId:node.commandId,name:node.name,phase:node.display!.phase,sequence:node.display!.sequence,outcome:node.outcome}))}
 }
 
 /**
@@ -176,9 +193,11 @@ export const commandDefinition: ConversationNodeDefinition<CommandState> = {
   target: 'chat',
   match: (event) => {
     if (event.type === 'command/run') {
+      if(event.data.display){const key=gestureKey(event.data.display);if(key)return {id:'gesture:'+key,role:'update'}}
       return { id: String(event.data.commandId), role: 'start' }
     }
     if (event.type === 'command/done') {
+      if(event.data.display){const key=gestureKey(event.data.display);if(key)return {id:'gesture:'+key,role:'update'}}
       return { id: String(event.data.commandId), role: 'update' }
     }
     const checkpoint = compactSource(event)
@@ -202,6 +221,7 @@ export const commandDefinition: ConversationNodeDefinition<CommandState> = {
     return updateCompactionState(context.state, match)
   },
   buildViewNode: (context) => {
+    if(context.id.startsWith('gesture:')){const node=gestureCommand(context.matches);return node?chatNode(context,'command',node.seq,node):null}
     const state = context.state ?? fallbackState(context)
     if (state === undefined) return null
     if (state.command.name !== 'compact') {

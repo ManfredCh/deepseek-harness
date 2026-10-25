@@ -104,6 +104,22 @@ describe('loadLayeredEnv', () => {
     for (const name of NAMES) Reflect.deleteProperty(process.env, name)
   }
 
+  it('does not open project or home env files when the launch explicitly disables them', () => {
+    const home = tmp()
+    const project = tmp()
+    mkdirSync(join(home, '.env'))
+    mkdirSync(join(project, '.env'))
+    vi.stubEnv('DSH_HOME', home)
+    vi.stubEnv('DSH_ENV_FILES', 'disabled')
+    vi.stubEnv('APP_BOOT_NO_FILE_PROCESS', 'inherited')
+    const warn = vi.fn()
+    try {
+      const snapshot = loadLayeredEnv(NAME, project, warn)
+      expect(snapshot.get('APP_BOOT_NO_FILE_PROCESS')).toEqual({ value: 'inherited', source: 'process' })
+      expect(warn).not.toHaveBeenCalled()
+    } finally { vi.unstubAllEnvs() }
+  })
+
   it('layers user under project under the inherited environment', () => {
     const home = tmp()
     const project = tmp()

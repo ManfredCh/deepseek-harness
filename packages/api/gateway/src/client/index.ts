@@ -10,6 +10,7 @@ export type { TypertGatewayFaultDetails } from '../remote-error-codes.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
   ConnectionHandle,
+  ConnectionWebSocket,
 } from '@deepseek-ai/dsh-client-connection/client'
 import type {
   InvocationDescriptor,
@@ -134,12 +135,17 @@ declare module '@deepseek-ai/cordis' {
 /** Required Client services: the Typert registry and the existing Connection carrier. */
 export const inject = ['typert', 'connection']
 
+/** Optional Node socket construction; all logical Remote streams still use the native mux. */
+export interface ClientRemoteOptions {
+  readonly createWebSocket?: (url: string) => WebSocket
+}
+
 /**
  * Install the typed Client Remote service.
  * @param ctx - Client Cordis root.
  */
-export function apply(ctx: Context): void {
-  new ClientRemoteService(ctx)
+export function apply(ctx: Context, options: ClientRemoteOptions = {}): void {
+  new ClientRemoteService(ctx, options)
 }
 
 class ClientRemoteService extends Service implements ClientRemote {
@@ -151,13 +157,15 @@ class ClientRemoteService extends Service implements ClientRemote {
   private readonly events: ClientRemoteEvents | undefined
   private mutations = Promise.resolve()
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, options: ClientRemoteOptions) {
     super(ctx, 'remote')
     this.ownerCtx = ctx
     const connection = ctx.get('connection') as ConnectionHandle
     this.connection = connection
     this.streams = new RemoteStreamMuxClient(
-      path => connection.openWebSocket(path),
+      options.createWebSocket === undefined
+        ? path => connection.openWebSocket(path)
+        : path => options.createWebSocket!(path) as ConnectionWebSocket,
       connection.interactions === 'answer',
     )
     if (connection.interactions === 'answer') {

@@ -39,6 +39,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 
   interface SlotMap {
+    /** Product actions over the native tab surface, independent of its active body. */
+    'sidebar.right.surface.actions': { kind:'list';scope:'session';owner:{ activeTab?:TabRecord;expanded:boolean } }
     /** Session content selected by the root-scoped right Sidebar controller. */
     'rightbar.session': {
       kind: 'single'

@@ -8,9 +8,10 @@
 
 import type { Transport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { SSEClientTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import type { Config } from './index.ts'
+import type { OAuthClientProvider } from './oauth.ts'
 
 /**
  * The subprocess seam's scrubbed parent env (credential-shaped and stale
@@ -28,7 +29,7 @@ function buildChildEnv(extra: Record<string, string>): Record<string, string> {
  * @param config - Resolved plugin config discriminated on `transport`.
  * @returns A connected-ready MCP Transport (stdio or Streamable HTTP).
  */
-export function createTransport(config: Config): Transport {
+export function createTransport(config: Config, authProvider?: OAuthClientProvider): Transport {
   switch (config.transport) {
     case 'stdio':
       return new StdioClientTransport({
@@ -37,10 +38,12 @@ export function createTransport(config: Config): Transport {
         env: buildChildEnv(config.env),
         cwd: config.cwd,
       })
+    case 'sse':
+      return new SSEClientTransport(new URL(config.url), { requestInit: { headers: config.headers }, ...(authProvider ? { authProvider } : {}) })
     case 'streamable-http':
       return new StreamableHTTPClientTransport(
         new URL(config.url),
-        { requestInit: { headers: config.headers } },
+        { requestInit: { headers: config.headers }, ...(authProvider ? { authProvider } : {}) },
       )
   }
 }

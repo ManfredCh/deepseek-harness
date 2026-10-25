@@ -33,7 +33,7 @@ import type {
 import { contextBreakdownProjectionDefinition } from './breakdown-projection.ts'
 import { contextPressureProjectionDefinition, tokenUsageProjectionDefinition } from './usage-projection.ts'
 import { estimateContent, estimateMessage, estimateToolsTokens, ROLE_OVERHEAD } from './estimate.ts'
-import { commitSurfaceTokens, planSurfaceTokens } from './surface-fold.ts'
+import { checkoutSurfaceTokens, commitSurfaceTokens, planSurfaceTokens } from './surface-fold.ts'
 import type { MeterSurfaceNode } from './surface-fold.ts'
 import { priceSurface } from './route-pricing.ts'
 
@@ -233,7 +233,7 @@ export class TokenMeter extends Service {
       // Contiguous session seqs index the durable log; existing Session history read, migration deferred.
       // oxlint-disable-next-line typescript/no-non-null-assertion, typescript/no-deprecated
       const event = session.eventAt(SessionSeq(state.consumedEvents))!
-      this._foldEvent(state, event)
+      this._foldEvent(state, event, event.type === 'session/history-checkout' ? session.snapshotEvents(SessionLogOffset(0), SessionLogOffset(event.seq + 1)) : undefined)
       state.consumedEvents = SessionLogOffset(state.consumedEvents + 1)
     }
     return state
@@ -244,10 +244,11 @@ export class TokenMeter extends Service {
    * mutating replay state, so a malformed event remains unread on every
    * retry instead of half-applying.
    */
-  private _foldEvent(state: ReplayState, event: SessionEvent): void {
+  private _foldEvent(state: ReplayState, event: SessionEvent, checkoutHistory?: readonly SessionEvent[]): void {
     let nextHeader = state.header
     let nextStepStart = state.stepStart
     let nextAnchor = state.anchor
+    const checkedOut = event.type === 'session/history-checkout' ? checkoutSurfaceTokens(checkoutHistory) : undefined
 
     switch (event.type) {
       case 'image/offload': {
@@ -325,6 +326,7 @@ export class TokenMeter extends Service {
     if (plan !== undefined) {
       commitSurfaceTokens(state.surface, plan)
     }
+    if (checkedOut !== undefined) state.surface = checkedOut
     state.anchor = nextAnchor
   }
 

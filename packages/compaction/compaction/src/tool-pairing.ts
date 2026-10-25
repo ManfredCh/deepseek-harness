@@ -6,6 +6,7 @@
  */
 
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
+import { surfaceToolPairingDelta } from '@deepseek-ai/dsh-session/surface'
 
 /** Incremental balance state for one session surface generation. */
 interface BalanceCache {
@@ -27,14 +28,7 @@ const balanceCacheBySession = new WeakMap<Session, BalanceCache>()
 
 /** Return how one surface event changes the in-progress tool-call count. */
 function eventDelta(event: SessionEvent): number {
-  switch (event.type) {
-    case 'assistant/message':
-      return event.data.message.content.filter(block => block.type === 'tool-call').length
-    case 'tool/result':
-      return -1
-    default:
-      return 0
-  }
+  return surfaceToolPairingDelta(event)
 }
 
 /** Fold surface sequences not yet in the cache into its balance state. */

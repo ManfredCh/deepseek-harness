@@ -15,6 +15,26 @@ function command(name: string, text = `ran:${name}`): CommandDefinition {
   }
 }
 
+it('returns the exact immutable CommandResult and pairing id from the native displayed entry', async () => {
+  const ctx = await mount()
+  const { agent } = await mintAgentScope(ctx, 'displayed-command')
+  const source = agent.session.append('turn/start', { turn: 1 })
+  agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const output = { kind: 'success' as const, text: 'Exact command receipt', sourceEventSeq: source.seq }
+  ctx.commands.register({ name: 'receipt', description: 'Return a command receipt', handler: () => output })
+  const display = { kind: 'control-gesture' as const, clientId: 'client', gestureId: 'gesture', worldId: 'world', generation: 2, entityId: 'entity', jointName: 'joint', phase: 'final' as const, sequence: 3 }
+  const execution = await ctx.commands.executeDisplayed(agent, '/receipt', [], display, new AbortController().signal)
+  expect(execution?.result).toEqual(output)
+  expect(Object.isFrozen(execution)).toBe(true)
+  expect(Object.isFrozen(execution?.result)).toBe(true)
+  display.generation = 99
+  expect(lifecycleOf(agent)).toMatchObject([
+    { type: 'command/run', data: { commandId: execution?.commandId, display: { generation: 2 } } },
+    { type: 'command/done', data: { commandId: execution?.commandId, kind: 'success', text: 'Exact command receipt', sourceEventSeq: source.seq, display: { generation: 2 } } },
+  ])
+  await ctx.fiber.dispose()
+})
+
 async function mount(): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)

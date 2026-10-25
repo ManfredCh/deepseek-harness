@@ -95,7 +95,7 @@ export function createList(remote: WorkspaceFilesListRemote): ListWorkspaceDirec
   return async (sessionId, path, signal) => {
     const result = await remote.workspaceFiles.list(sessionId, path, signal)
     if (!result.ok) return result
-    return { ok: true, value: { entries: result.value.entries, truncated: result.value.truncated } }
+    return { ok: true, value: { entries: result.value.entries, truncated: result.value.truncated, ...result.value.absolutePath ? { absolutePath: result.value.absolutePath } : {}, ...result.value.rootPath ? { rootPath: result.value.rootPath } : {} } }
   }
 }
 
@@ -112,10 +112,26 @@ export function childPath(parent: string, name: string): string {
   return `${parent.replace(/[/\\]+$/, '')}/${name}`
 }
 
+/** Create one Host-confined file or directory without replacing existing entries. */
+export type CreateWorkspaceEntry = (sessionId: SessionId, parent: string, name: string, kind: 'file' | 'directory', signal: AbortSignal) => Promise<RemoteResult<{ absolutePath: string; path: string; type: 'file' | 'directory' }>>
+/**
+ * Bind both creation methods to the same Session-aware workspace endpoint.
+ * @param remote - generated workspace-file creation namespace.
+ * @returns the creation operation for the Files face.
+ */
+export function createEntries(remote: { workspaceFiles: Pick<ClientRemote['workspaceFiles'], 'createFile' | 'createDirectory'> }): CreateWorkspaceEntry {
+  return (sessionId, parent, name, kind, signal) => kind === 'directory'
+    ? remote.workspaceFiles.createDirectory(sessionId, parent, name, signal)
+    : remote.workspaceFiles.createFile(sessionId, parent, name, signal)
+}
 /** The tree's injected business face, as the body receives it. */
 export interface FilesInjected {
   /** Refresh the open directory tree. @param tabId - owning tab. */
   readonly refresh: (tabId: TabId) => void
+  /** Navigate this tab without changing the Session workspace. */
+  readonly navigate: (tabId: TabId, path: string, signal: AbortSignal, historyIndex?: number) => void
+  /** Create one entry in the shown directory, under Host write policy. */
+  readonly createEntry?: (parent: string, name: string, kind: 'file' | 'directory', signal: AbortSignal) => ReturnType<CreateWorkspaceEntry>
   /** Control automatic rereads without closing watches. @param tabId - owning tab. @param enabled - automatic-refresh setting. */
   readonly setAutoRefresh: (tabId: TabId, enabled: boolean) => void
   /**
@@ -147,11 +163,13 @@ export interface FilesInjected {
  * Bind the tree's face to one directory listing.
  * @param list - the bound `workspaceFiles.list` call.
  * @param watch - target-scoped directory observation.
+ * @param create - optional Host-confined file and directory creation.
  * @returns the Slot `inject` factory: session and bound actions in, face out.
  */
 export function filesFace(
   list: ListWorkspaceDirectory,
   watch: WatchWorkspaceDirectory,
+  create?: CreateWorkspaceEntry,
 ): (sessionId: SessionId, actions: BoundActions<ReturnType<typeof createFilesStore>>) => FilesInjected {
   return (
     sessionId: SessionId,
@@ -160,6 +178,9 @@ export function filesFace(
     /** Per tab, per absolute path: the listing generation a settlement must match; the latest request wins. */
     const generations = new Map<TabId, Map<string, number>>()
     const roots = new Map<TabId, DirectoryNode>()
+    const navigationGenerations = new Map<TabId, number>()
+    const navigationTargets = new Map<TabId, { path: string; promise: Promise<DirLevel | undefined> }>()
+    const expansions = new Map<TabId, readonly string[]>()
     const nextGeneration = (tabId: TabId, path: string): number => {
       const byPath = generations.get(tabId) ?? new Map<string, number>()
       generations.set(tabId, byPath)
@@ -169,6 +190,8 @@ export function filesFace(
     }
     const load = async (tabId: TabId, path: string, signal: AbortSignal): Promise<DirLevel | undefined> => {
       if (signal.aborted) return
+      const pending = navigationTargets.get(tabId)
+      if (pending?.path === path) return pending.promise
       const generation = nextGeneration(tabId, path)
       actions.loading(tabId, path)
       return list(sessionId, path, signal).then((result) => {
@@ -180,27 +203,68 @@ export function filesFace(
         return result.ok ? result.value : undefined
       })
     }
+    const mountRoot = (tabId: TabId, path: string, signal: AbortSignal): void => {
+      void roots.get(tabId)?.close()
+      roots.set(tabId, new DirectoryNode(path,
+        (directory, lifetime) => load(tabId, directory, lifetime),
+        (directory, lifetime) => watch(sessionId, directory, lifetime),
+        (directory, error) => {
+          if (!signal.aborted) actions.failed(tabId, directory, new RemoteError('gateway/internal', error instanceof Error ? error.message : String(error), {}))
+        }, signal, expansions.get(tabId),
+      ).open())
+    }
+    function navigate(tabId: TabId, path: string, signal: AbortSignal, historyIndex?: number): void {
+      if (signal.aborted) return
+      const sequence = (navigationGenerations.get(tabId) ?? 0) + 1
+      navigationGenerations.set(tabId, sequence)
+      const generation = nextGeneration(tabId, path)
+      actions.navigating(tabId, path)
+      actions.loading(tabId, path)
+      const promise = list(sessionId, path, signal).then(result => {
+        if (signal.aborted || navigationGenerations.get(tabId) !== sequence || generations.get(tabId)?.get(path) !== generation) return undefined
+        navigationTargets.delete(tabId)
+        if (!result.ok) {
+          actions.failed(tabId, path, result.error)
+          actions.navigationFailed(tabId, result.error)
+          return undefined
+        }
+        const absolute = result.value.absolutePath ?? path
+        actions.loaded(tabId, absolute, result.value)
+        actions.navigated(tabId, absolute, historyIndex)
+        mountRoot(tabId, absolute, signal)
+        return result.value
+      }, (error: unknown) => {
+        if (!signal.aborted && navigationGenerations.get(tabId) === sequence) {
+          navigationTargets.delete(tabId)
+          const failure = new RemoteError('gateway/internal', error instanceof Error ? error.message : String(error), {})
+          actions.failed(tabId, path, failure)
+          actions.navigationFailed(tabId, failure)
+        }
+        return undefined
+      })
+      navigationTargets.set(tabId, { path, promise })
+    }
     return {
+      ...create === undefined ? {} : { createEntry: (parent: string, name: string, kind: 'file' | 'directory', signal: AbortSignal) => create(sessionId, parent, name, kind, signal) },
+      navigate,
       refresh: (tabId) => { void roots.get(tabId)?.refreshTree() },
       setAutoRefresh: (tabId, enabled) => {
         actions.autoRefresh(tabId, enabled)
         roots.get(tabId)?.setAutomatic(enabled)
       },
       start(tabId, root, signal) {
+        if (signal.aborted) return
         actions.start(tabId, root)
         signal.addEventListener('abort', () => {
           void roots.get(tabId)?.close()
           roots.delete(tabId)
           generations.delete(tabId)
+          navigationGenerations.delete(tabId)
+          navigationTargets.delete(tabId)
+          expansions.delete(tabId)
           actions.forget(tabId)
         }, { once: true })
-        roots.set(tabId, new DirectoryNode(root,
-          (path, lifetime) => load(tabId, path, lifetime),
-          (path, lifetime) => watch(sessionId, path, lifetime),
-          (path, error) => {
-            if (!signal.aborted) actions.failed(tabId, path, new RemoteError('gateway/internal', error instanceof Error ? error.message : String(error), {}))
-          }, signal,
-        ).open())
+        mountRoot(tabId, root, signal)
       },
       load: (tabId, path, signal) => { void load(tabId, path, signal) },
       toggle(tabId, parentPath, path, expanded, signal) {
@@ -211,6 +275,7 @@ export function filesFace(
         if (parent === undefined && !expanded.includes(parentPath)) return
         const collapsing = expanded.includes(path)
         const next = collapsing ? expanded.filter(value => value !== path) : [...expanded, path]
+        expansions.set(tabId, next)
         root.setExpanded(next)
         if (collapsing) void parent?.collapse(path)
         else parent?.expand(path, next)

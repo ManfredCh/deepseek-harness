@@ -450,3 +450,39 @@ describe('createSidebarRightStore — page uniqueness', () => {
     expect(Object.values(layout().tabs).filter(tab => tab.kind === 'guide')).toHaveLength(1)
   })
 })
+
+
+describe('product-fixed pages', () => {
+  it('keeps a fixed Scene tab through close, drag, float, replacement and undo', () => {
+    const { actions, layout, surface } = harness()
+    actions.ensurePinned(SESSION, [{ kind: 'scene', contentId: pageAddress('scene'), title: 'Scene', pinned: true }])
+    const scene = Object.values(layout().tabs).find(tab => tab.kind === 'scene')!
+    const pane = findTabPane(layout(), scene.id)
+    const before = layout()
+    actions.closeTab(SESSION, scene.id)
+    actions.placeTab(SESSION, scene.id, pane.id, 1)
+    actions.floatTab(SESSION, scene.id)
+    actions.dropTab(SESSION, scene.id, pane.id, 'right')
+    actions.duplicateTab(SESSION, scene.id)
+    expect(layout()).toEqual(before)
+    actions.openContent(SESSION, { kind: 'files', contentId: pageAddress('files'), title: 'Files', replaceTab: scene.id }, () => {})
+    expect(layout().tabs[scene.id]?.pinned).toBe(true)
+    expect(findTabPane(layout(), scene.id).tabs[0]).toBe(scene.id)
+    actions.undo(SESSION)
+    expect(layout().tabs[scene.id]?.pinned).toBe(true)
+    actions.undo(SESSION)
+    expect(layout().tabs[scene.id]?.pinned).toBe(true)
+    expect(surface().layout.expanded).toBe(true)
+  })
+
+  it('adopts an already-retained Scene page without creating a second body identity', () => {
+    const { actions, layout } = harness()
+    let opened: TabId | undefined
+    actions.openContent(SESSION, { kind: 'scene', contentId: pageAddress('scene'), title: 'Scene' }, id => { opened = id })
+    actions.ensurePinned(SESSION, [{ kind: 'scene', contentId: pageAddress('scene'), title: 'Scene', pinned: true }])
+    expect(Object.values(layout().tabs).filter(tab => tab.kind === 'scene')).toHaveLength(1)
+    expect(layout().tabs[opened!]?.pinned).toBe(true)
+    actions.closeTab(SESSION, opened!)
+    expect(layout().tabs[opened!]?.pinned).toBe(true)
+  })
+})

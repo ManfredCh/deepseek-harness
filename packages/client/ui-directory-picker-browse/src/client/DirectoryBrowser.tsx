@@ -48,6 +48,10 @@ import css from './DirectoryBrowser.module.css'
 export interface DirectoryBrowserProps {
   /** Dialog visibility (owner-local; closed unmounts nothing but resets on reopen). */
   open: boolean
+  /** Optional absolute opening path supplied by a file surface. */
+  initialPath?: string
+  /** Show the filesystem ancestors and the selected absolute path. */
+  fullAncestry?: boolean
   /**
    * List one directory level (absent path = the Host home directory); the
    * signal aborts a superseded scan on the wire. A rejection may carry
@@ -113,7 +117,8 @@ const DRAFT_PREVIEW_DEBOUNCE_MS = 250
  * localized Home crumb; outside it the full ancestry shows, the root labeled
  * by its own path.
  */
-function displayCrumbs(listing: DirectoryListing, homeLabel: string): DirectoryEntry[] {
+function displayCrumbs(listing: DirectoryListing, homeLabel: string, fullAncestry = false): DirectoryEntry[] {
+  if (fullAncestry) return listing.crumbs
   const homeIndex = listing.crumbs.findIndex(crumb => crumb.path === listing.home)
   if (homeIndex === -1) return listing.crumbs
   const tail = listing.crumbs.slice(homeIndex + 1)
@@ -270,7 +275,7 @@ function LevelColumn({ entries, selectedPath, busy, onPick, showHidden, filterPr
  * @param props - owner-controlled browser props.
  * @returns the dialog element (null while closed, via Modal).
  */
-export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen, onClose, busy, t }: DirectoryBrowserProps) {
+export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen, onClose, busy, t, initialPath, fullAncestry = false }: DirectoryBrowserProps) {
   // Miller state: the listed level, the selected row in it, and the selected
   // folder's own listing (the right column; null while nothing is selected).
   const [parent, setParent] = useState<DirectoryListing | null>(null)
@@ -443,7 +448,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
         settle()
       }
       // Arity is label-independent: only the collapsed chain's depth decides.
-      if (displayCrumbs(target, '').length < 2) { landSingle(); return }
+      if (displayCrumbs(target, '', fullAncestry).length < 2) { landSingle(); return }
       const parentCrumb = target.crumbs.at(-2)
       /* v8 ignore next -- narrowing: a two-deep display chain implies a parent crumb (root-to-target inclusive). */
       if (parentCrumb === undefined) { landSingle(); return }
@@ -477,7 +482,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
       setLoading(false)
       if (options.announce) setError(failureText(reason))
     })
-  }, [launchListing, continueScan])
+  }, [launchListing, continueScan, fullAncestry])
 
   /** Commit a submitted path (Enter, a crumb, the initial home listing): the editor closes, failures surface. */
   const navigate = useCallback((path?: string) => {
@@ -559,8 +564,8 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
     // With no level listed yet (the editor superseded the initial home
     // listing), plain cancellation would leave a permanently blank picker:
     // restart the home listing.
-    if (parent === null) navigate()
-  }, [supersede, child, parent, navigate])
+    if (parent === null) navigate(initialPath)
+  }, [supersede, child, parent, navigate, initialPath])
 
   /** A right-column pick advances the view one level: child becomes the level. */
   const advance = useCallback((entry: DirectoryEntry) => {
@@ -580,7 +585,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
       setChild(null)
       setCreatingFolder(false)
       setShowHidden(false)
-      navigate()
+      navigate(initialPath)
       return
     }
     supersede()
@@ -597,7 +602,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
     // flags armed; retire them so a later render cannot consume them.
     refocusPick.current = false
     refocusEditZone.current = false
-  }, [open, navigate, supersede])
+  }, [open, navigate, supersede, initialPath])
 
   /** The folder a create or Open acts on: the selection, else the listed level. */
   const targetPath = selected?.path ?? parent?.path ?? null
@@ -695,7 +700,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
   const typedPrefix = crumbSource === null || pathDraft === null
     ? null
     : readDraft(crumbSource, pathDraft, scanned.current).tail
-  const crumbs = crumbSource === null ? [] : displayCrumbs(crumbSource, t('browser.home'))
+  const crumbs = crumbSource === null ? [] : displayCrumbs(crumbSource, t('browser.home'), fullAncestry)
   const crumbTail = crumbs.at(-1)?.path
   useEffect(() => {
     const trail = crumbTrailRef.current
@@ -817,6 +822,7 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
       >
         <div className={css.header}>
           <h2 className={css.title}>{t('browser.title')}</h2>
+          {fullAncestry && crumbSource !== null && <code className={css.absolutePath}>{crumbSource.path}</code>}
           <div className={css.crumbBar}>
             {pathDraft === null
               ? (

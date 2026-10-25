@@ -71,7 +71,8 @@ export interface UiWorkspace {
   ): Promise<SessionId>
   /**
    * Resolve the Session for a new conversation in a Workspace: navigation names the first
-   * reusable blank member, skipping blanks that list a preset other than a requested one, and
+   * reusable blank member owned by this window — another window's draft is never adopted —
+   * skipping blanks that list a preset other than a requested one, and
    * the Host reuses it under the requested preset or its default, or creates another Session.
    * @param workspaceId - target Workspace.
    * @param options - choices for the created or reused Session.
@@ -156,6 +157,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     readonly agentPreset: string | undefined
     readonly attempt: Promise<SessionId>
   }>()
+  /** Blank Sessions this window's own Service instance staged for a Workspace. */
+  private readonly ownDrafts = new Set<SessionId>()
   private readonly lifetime = new AbortController()
   private readonly selection = createSnapshotStore<MainSelection>(
     {}, { persist: { name: 'dsh.sessions.current' } },
@@ -218,21 +221,33 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   /** Name the first reusable member blank; a requested preset also skips blanks listing another preset. */
-  private createInWorkspace(workspace: WorkspaceView, options: Pick<StartSessionOptions, 'agentPreset'>): Promise<SessionId> {
+  private async createInWorkspace(workspace: WorkspaceView, options: Pick<StartSessionOptions, 'agentPreset'>): Promise<SessionId> {
     const archived = this.workspaces.list.getSnapshot().archivedSessionIds
     const sessions = this.sessions.list.getSnapshot()
+    // A blank Session is the draft of the window that created it: reuse only
+    // this window's own drafts, so opening a Workspace or starting a Session
+    // never adopts — and never navigates — another window's draft.
+    const own = this.mainReference?.sessionId
     const blank = sessions.ids.find((id) => {
       const summary = sessions.byId[id]
       const listed = summary?.projectionValues?.agentPreset
-      return summary !== undefined && summary.blank && summary.cwd === workspace.path
+      return (id === own || this.ownDrafts.has(id))
+        && summary !== undefined && summary.blank && summary.cwd === workspace.path
         && workspace.sessionIds.includes(id) && !archived.includes(id)
         && (options.agentPreset === undefined || typeof listed !== 'string' || listed === options.agentPreset)
     })
-    return this.createNamed({
-      workspaceId: workspace.workspaceId,
-      ...(blank === undefined ? {} : { sessionId: blank }),
-      ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
-    })
+    if (blank === undefined) return this.createOwnBlank(workspace.workspaceId)
+    try {
+      return await this.createNamed({
+        workspaceId: workspace.workspaceId,
+        sessionId: blank,
+        ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
+      })
+    } catch (error: unknown) {
+      if (sessionCreateErrorOf(error)?.rpcError.code !== 'session/writer-held') throw error
+      // Another window claimed the blank between the scan and the create.
+      return this.createOwnBlank(workspace.workspaceId)
+    }
   }
 
   /**
@@ -252,6 +267,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         console.warn('declined blank Session projection reload failed:', reason)
       })
     }
+    this.ownDrafts.add(sessionId)
     return sessionId
   }
 
@@ -271,9 +287,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       return await this.createNamed({ ...request, agentPreset: recorded })
     } catch (error: unknown) {
       const code = sessionCreateErrorOf(error)?.rpcError.code
+      if (code === 'session/writer-held') return this.createOwnBlank(workspaceId)
       if (code !== 'agent-preset/not-found' && code !== 'agent-preset/invalid') throw error
       return this.createNamed(request)
     }
+  }
+
+  private async createOwnBlank(workspaceId: WorkspaceId): Promise<SessionId> {
+    const id = await this.sessions.create({ workspaceId })
+    this.ownDrafts.add(id)
+    return id
   }
 
   openSession(target: SessionTarget): void {

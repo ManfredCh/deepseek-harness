@@ -66,6 +66,11 @@ export class SandboxedFileSystem extends LocalFileSystem {
     return this.defaultMode
   }
 
+  /** Create one directory under the exact same task policy as text writes. */
+  override async createDirectory(target: FsTarget, signal?: AbortSignal, sandboxPolicy?: SandboxExecutionPolicy): Promise<void> {
+    return super.createDirectory(await this.checkedTarget(target, sandboxPolicy), signal)
+  }
+
   /**
    * Fence the write by the per-call policy, then delegate to the inherited
    * atomic write. See {@link checkedTarget}.

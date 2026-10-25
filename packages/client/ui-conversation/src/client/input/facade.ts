@@ -63,6 +63,8 @@ export interface SessionInputDeps {
     mode: InputSubmitMode,
     signal: AbortSignal,
   ): Promise<SubmitOutcome>
+  /** Initiating-composer notification after a claimed command settles; absent leaves local effects unapplied. */
+  commandSettled?(token: string, outcome: SubmitOutcome, signal: AbortSignal): Promise<void>
   /** Command-plane attachment plumbing (the hub owns the conversation face and the copy). */
   commandAttachments: {
     /** Resolve ordered draft ids to wire payloads without sending them; rejects when an id no longer resolves. */
@@ -430,7 +432,7 @@ export class SessionInputShell implements SessionInput {
       this.notify('error', this.deps.commandAttachments.unsupportedNotice(before.claim?.token ?? before.draft))
       return
     }
-    this.dispatchRun({ type: 'enter', mode, draft: this.projection.clipboardText, submission })
+    this.dispatchRun({ type: 'enter', mode, draft: this.projection.clipboardText, submission, hasAttachments: this.attachmentIds.length > 0 })
     const phase = this.snapshot.phase
     if (phase === 'adjudicating' || phase === 'submitting') {
       this.deps.popup?.()?.dismiss()
@@ -899,7 +901,7 @@ export class SessionInputShell implements SessionInput {
         return claim.submit(args, this.deps.actx, attachments)
       })
       .then(
-        (outcome) => {
+        async (outcome) => {
           if (outcome === undefined || this.dead(attempt)) return
           if (outcome.kind === 'success' && attachmentIds.length > 0) {
             const submitted = new Set(attachmentIds)
@@ -911,6 +913,10 @@ export class SessionInputShell implements SessionInput {
             command: this.projection.command, outcome,
             ...(outcome.kind === 'error' && outcome.text === undefined ? { message: 'command failed' } : {}),
           }))
+          if (outcome.kind === 'success') {
+            try { await this.deps.commandSettled?.(claim.token, outcome, attempt.signal) }
+            catch (error) { if (!this.dead(attempt)) this.notify('error', error instanceof Error ? error.message : String(error)) }
+          }
         },
         (error: unknown) => {
           if (this.dead(attempt)) return

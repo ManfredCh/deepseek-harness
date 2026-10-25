@@ -7,6 +7,17 @@ import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 
 describe('provider retry policy', () => {
+  it('captures an optional request phase budget while keeping the retry count ceiling', () => {
+    const policy = resolveRetryPolicy({ mode: 'normal', requestPhaseTimeoutMs: 150_000 }, 'provider.retryPolicy')
+    expect(policy).toMatchObject({ mode: 'normal', maxRetries: 5, requestPhaseTimeoutMs: 150_000 })
+    expect(Object.isFrozen(policy)).toBe(true)
+    expect(resolveRetryPolicy(undefined, 'provider.retryPolicy')).not.toHaveProperty('requestPhaseTimeoutMs')
+  })
+
+  it.each([0, -1, Number.POSITIVE_INFINITY, Number.NaN, MAX_TIMER_DELAY_MS + 1])('rejects an invalid whole-phase timer %s', (requestPhaseTimeoutMs) => {
+    expect(() => resolveRetryPolicy({ mode: 'normal', requestPhaseTimeoutMs }, 'provider.retryPolicy')).toThrow('requestPhaseTimeoutMs')
+  })
+
   it('resolves immutable normal defaults', () => {
     const policy = resolveRetryPolicy(undefined, 'provider.retryPolicy')
 

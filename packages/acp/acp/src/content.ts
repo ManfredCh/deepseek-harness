@@ -3,7 +3,7 @@
 import type { ContentBlock as AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import { isImageAdmissionError } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { FileAttachmentRef, ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
@@ -128,6 +128,7 @@ export async function admitAcpPrompt(
   signal: AbortSignal,
 ): Promise<ContentBlock[]> {
   const images: SaveImageAttachment[] = []
+  const files: Array<{ data: Uint8Array; name: string }> = []
   for (const block of prompt) {
     switch (block.type) {
       case 'text':
@@ -140,11 +141,26 @@ export async function admitAcpPrompt(
       case 'audio':
         throw new AcpContentError('audio prompt content is not supported', 'invalid')
       case 'resource':
-        throw new AcpContentError('embedded resource prompt content is not supported', 'invalid')
+        if ('blob' in block.resource) {
+          if (!CANONICAL_BASE64.test(block.resource.blob)) throw new AcpContentError('embedded resource must use canonical base64', 'invalid')
+          const data = Buffer.from(block.resource.blob, 'base64')
+          if (data.toString('base64') !== block.resource.blob) throw new AcpContentError('embedded resource must use canonical base64', 'invalid')
+          const name = block.resource.uri.split('/').at(-1)?.split('?')[0] || 'embedded-resource'
+          files.push({ data, name })
+        }
+        break
       /* v8 ignore next 2 -- ACP ContentBlock is a closed generated union. */
       default:
         throw new AcpContentError('unsupported ACP prompt content', 'invalid')
     }
+  }
+
+  const fileRefs: FileAttachmentRef[] = []
+  if (files.length > 0) {
+    const attachments = ctx.get('attachments')
+    if (!attachments) throw new AcpContentError('no attachment store is mounted for embedded resources', 'invalid')
+    for (const file of files) { signal.throwIfAborted(); fileRefs.push(await attachments.saveFile(file)) }
+    signal.throwIfAborted()
   }
 
   let refs: readonly ImageAttachmentRef[] = []
@@ -167,6 +183,7 @@ export async function admitAcpPrompt(
   const content: ContentBlock[] = []
   let pendingText = ''
   let imageIndex = 0
+  let fileIndex = 0
   const flushText = (): void => {
     if (pendingText.length === 0) return
     content.push({ type: 'text', text: pendingText })
@@ -186,9 +203,14 @@ export async function admitAcpPrompt(
         content.push({ type: 'image', attachment: ref })
         break
       }
-      /* v8 ignore start -- the validation pass above rejects both tags before reconstruction. */
+      case 'resource': {
+        pendingText += `\n[resource uri=${JSON.stringify(block.resource.uri)} mimeType=${JSON.stringify(block.resource.mimeType ?? 'application/octet-stream')}]\n`
+        if ('text' in block.resource) pendingText += block.resource.text
+        else { flushText(); content.push({ type: 'file', attachment: fileRefs[fileIndex++] as FileAttachmentRef }) }
+        break
+      }
+      /* v8 ignore start -- the validation pass above rejects audio before reconstruction. */
       case 'audio':
-      case 'resource':
         break
       /* v8 ignore stop */
       /* v8 ignore next 2 -- validated by the first closed-union switch. */
@@ -197,7 +219,7 @@ export async function admitAcpPrompt(
     }
   }
   flushText()
-  if (!content.some(block => block.type === 'image' || (block.type === 'text' && block.text.trim().length > 0))) {
+  if (!content.some(block => block.type === 'image' || block.type === 'file' || (block.type === 'text' && block.text.trim().length > 0))) {
     throw new AcpContentError('empty prompt', 'invalid')
   }
   return content
@@ -217,6 +239,13 @@ export async function assistantBlockToAcp(
 ): Promise<AcpContentBlock | undefined> {
   if (block.type === 'text') {
     return block.text.length === 0 ? undefined : { type: 'text', text: block.text }
+  }
+  if (block.type === 'file') {
+    const attachments = ctx.get('attachments')
+    if (!attachments) throw new AcpContentError('cannot deliver stored file without attachment store', 'internal')
+    const chunks: Uint8Array[] = []
+    for await (const chunk of attachments.readFileStream(block.attachment)) chunks.push(chunk)
+    return { type: 'resource', resource: { uri: `attachment://${block.attachment.attachmentId}/${encodeURIComponent(block.attachment.name)}`, mimeType: 'application/octet-stream', blob: Buffer.concat(chunks).toString('base64') } }
   }
   if (block.type !== 'image') return undefined
   const attachments = ctx.get('attachments')

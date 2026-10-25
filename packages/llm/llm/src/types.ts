@@ -37,12 +37,26 @@ export type {
   UserMessage,
 } from './message.ts'
 
+/** 中央公开失败事实；未知结果不得被通用TIMEOUT重试覆盖。 */
+export interface LlmFailureDiagnostic {
+  readonly version: 1
+  readonly domain: 'account' | 'model' | 'search' | 'generation' | 'resource'
+  readonly code: string
+  readonly stage: string
+  readonly fieldPath: string | null
+  readonly retryable: boolean
+  readonly effect: 'none' | 'released' | 'reserved' | 'charged' | 'unknown'
+  readonly requestId: string | null
+}
+
 /** Serializable provider or transport failure facts; policy decides whether they are retryable. */
 export interface LlmFailure {
   /** Human-readable provider or transport failure. */
   readonly message: string
   /** Stable provider-neutral machine-routing code. */
   readonly code: string
+  /** 公开诊断保留原请求身份及结果未知门，不能推断费用或丢弃后再请求。 */
+  readonly diagnostic?: LlmFailureDiagnostic
   /** HTTP status returned by the provider, when available. */
   readonly status?: number
   /** Provider-requested delay in milliseconds, when valid and available. */

@@ -3,6 +3,7 @@
 import { isAbsolute } from 'node:path'
 import { SessionFormatError, SessionFormatUnsupportedMigrationError, isSessionFormatJsonObject, sessionFormatCount } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatArtifact, SessionFormatEvent } from '@deepseek-ai/dsh-session-format'
+import { assertProductHistoryEvent } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { assertV4DeveloperData } from './developer.ts'
 import { assertV4LifecycleRelationships } from './relationships.ts'
 import { assertV4MessageSources } from './message-sources.ts'
@@ -61,6 +62,7 @@ export function restoreReleasedV4Artifact(artifact: SessionFormatArtifact, known
         `format v4 contains unknown event type ${JSON.stringify(event.type)} at seq ${index}`,
       )
     }
+    assertProductHistoryEvent(event)
     if (event.seq !== index) throw new SessionFormatError(`format v4 event ${index} is not dense`)
     if (!knownEventTypes.has(event.type)) continue
     assertV4RetiredSyntax(event)

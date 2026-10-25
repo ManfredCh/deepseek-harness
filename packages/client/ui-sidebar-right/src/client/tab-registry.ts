@@ -92,6 +92,8 @@ export interface SidebarRightGuideBox extends SidebarRightGuideEntry {
 
 /** One registered tab type: its static face, and nothing else. */
 export interface SidebarRightTabDefinition {
+  /** Open one fixed product page first in each Session. */
+  readonly pinned?: boolean
   /**
    * This implementation's identity in the tab system, unique across every
    * registration (a package name is the natural value). A kind is not unique —

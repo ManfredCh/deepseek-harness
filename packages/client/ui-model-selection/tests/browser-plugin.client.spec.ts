@@ -19,7 +19,7 @@ import type { ModelSelection, ModelSelectionProjection } from '@deepseek-ai/dsh-
 import type { CommandContribution, PopupSelectSpec, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ModelSelectInjected } from '../src/client/slots.ts'
 import { apply, inject } from '../src/client/index.ts'
-import { zh } from '../src/client/locales.ts'
+import { zh, en } from '../src/client/locales.ts'
 
 const sid = (k: string): SessionId => k as SessionId
 
@@ -65,7 +65,7 @@ const GROUPS = [{
 }]
 
 /** Boot the plugin over fake faces + a stateful fake host (current moves on selectModel). */
-async function bench(locale: 'zh' | 'en' = 'zh') {
+async function bench(locale: 'zh' | 'en' = 'zh', presentation: { manualOnly?: boolean; guest?: boolean } = {}) {
   const ctx = new Context()
   let defaultSelection: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
   let selected = defaultSelection
@@ -83,7 +83,8 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
       return Promise.resolve({
         ok: true as const,
         value: {
-          default: defaultSelection,
+          default: presentation.manualOnly ? null : defaultSelection,
+          ...presentation.manualOnly && presentation.guest ? { manualOnlyPresentation: 'guest' as const } : {},
           routableProviders: routable ? ['deepseek-official'] : [],
           groups: routable ? groups : [],
           failures: [],
@@ -556,4 +557,19 @@ it.each([false, true])('reports accepted switches with blank=%s and no refused s
     await face.select({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
     expect(b.track).not.toHaveBeenCalled()
   } finally { await scope.fiber.dispose(); await b.ctx.fiber.dispose() }
+})
+
+
+it.each(['zh', 'en'] as const)('uses the native resolver locale for an explicit Guest-empty catalog: %s', async (locale) => {
+  const b = await bench(locale, { manualOnly: true, guest: true })
+  try {
+    b.mint('guest')
+    const face = b.seat().inject!(sid('guest'))
+    face.load()
+    await vi.waitFor(() => {
+      expect(face.directory.getSnapshot()).toMatchObject({ current: null, routable: false, manualOnlyPresentation: 'guest', status: 'ready' })
+      expect(b.blockOf('guest')?.reason).toBe((locale === 'zh' ? zh : en)['blocked.guest'])
+    })
+    expect(b.calls.select).toBe(0)
+  } finally { await b.ctx.fiber.dispose() }
 })

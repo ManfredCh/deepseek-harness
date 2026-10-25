@@ -17,15 +17,18 @@ import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import { CommandId } from './brand.ts'
 import type { CommandDefinitionId } from './brand.ts'
 import type {
+  CommandDisplayMetadata,
   CommandDescriptor,
   CommandExecution,
   CommandInputDescriptor,
   CommandResult,
   CommandSubmitAttachment,
 } from './types.ts'
+import { commandDisplay } from './types.ts'
 
 export { CommandDefinitionId, CommandId } from './brand.ts'
 export type * from './types.ts'
+export { commandDisplay, commandDisplayKey } from './types.ts'
 
 export const name = 'commands'
 
@@ -358,11 +361,16 @@ export class CommandRuntime extends TypertRemoteService {
    *   `undefined` when syntax or name does not resolve.
    */
   @Remote
-  async execute(
+  execute(agent:Agent,line:string,attachments:readonly CommandSubmitAttachment[],signal:AbortSignal):Promise<CommandExecution|undefined>{return this.executeWithDisplay(agent,line,attachments,signal)}
+  /** Optional presentation metadata uses its own entry; legacy execute stays unchanged. */
+  @Remote
+  executeDisplayed(agent:Agent,line:string,attachments:readonly CommandSubmitAttachment[],display:CommandDisplayMetadata,signal:AbortSignal):Promise<CommandExecution|undefined>{return this.executeWithDisplay(agent,line,attachments,signal,display)}
+  private async executeWithDisplay(
     agent: Agent,
     line: string,
     submittedAttachments: readonly CommandSubmitAttachment[],
     signal: AbortSignal,
+    display?: CommandDisplayMetadata,
   ): Promise<CommandExecution | undefined> {
     const parsed = parseCommand(line)
     if (parsed === undefined) return undefined
@@ -370,15 +378,18 @@ export class CommandRuntime extends TypertRemoteService {
     if (command === undefined) return undefined
     if (signal.aborted) throw abortError(signal)
     const commandId = this.mintCommandId()
+    const presentation=commandDisplay(display)
     this.appendLifecycle(agent.session, 'command/run', {
       commandId,
       name: parsed.name,
       ...command.definition.recordInput === false ? {} : { args: parsed.rawInput },
       source: { kind: 'user' },
+      ...presentation?{display:presentation}:{},
     })
     const settle = (result: CommandResult): CommandExecution => {
       this.appendLifecycle(agent.session, 'command/done', {
         commandId, kind: result.kind,
+        ...presentation?{display:presentation}:{},
         ...result.text === undefined ? {} : { text: result.text },
         ...result.kind === 'success' && result.sourceEventSeq !== undefined
           ? { sourceEventSeq: result.sourceEventSeq }
@@ -405,7 +416,7 @@ export class CommandRuntime extends TypertRemoteService {
         if (error instanceof AttachmentError) {
           return settle({ kind: 'error', text: error.message })
         }
-        this.settleThrown(agent.session, parsed.name, commandId, error)
+        this.settleThrown(agent.session, parsed.name, commandId, error, presentation)
         throw error
       }
       // Cancellation must be honored BEFORE the handler runs: admission may
@@ -414,7 +425,7 @@ export class CommandRuntime extends TypertRemoteService {
       // image objects stay unreferenced and are deferred-GC territory.)
       const cancelledDuringAdmission = cancellationOf(signal)
       if (cancelledDuringAdmission !== undefined) {
-        this.settleThrown(agent.session, parsed.name, commandId, cancelledDuringAdmission)
+        this.settleThrown(agent.session, parsed.name, commandId, cancelledDuringAdmission, presentation)
         throw cancelledDuringAdmission
       }
     }
@@ -424,17 +435,18 @@ export class CommandRuntime extends TypertRemoteService {
       const output = command.definition.handler(invocation)
       result = normalizeResult(parsed.name, await withAbort(Promise.resolve(output), signal))
     } catch (error: unknown) {
-      this.settleThrown(agent.session, parsed.name, commandId, error)
+      this.settleThrown(agent.session, parsed.name, commandId, error, presentation)
       throw error
     }
     return settle(result)
   }
 
   /** Contained `command/done` error append for a thrown handler or admission failure. */
-  private settleThrown(session: Session, command: string, commandId: CommandId, error: unknown): void {
+  private settleThrown(session: Session, command: string, commandId: CommandId, error: unknown, display?:CommandDisplayMetadata): void {
     try {
       this.appendLifecycle(session, 'command/done', {
         commandId, kind: 'error',
+        ...display?{display}:{},
         text: error instanceof Error ? error.message : renderThrown(error),
       })
     } catch (appendError: unknown) {

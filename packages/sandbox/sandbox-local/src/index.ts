@@ -372,7 +372,7 @@ export class LocalSandboxProvider extends SandboxProvider {
       return [
         ...this.windowsAclRunnerInvocation(),
         '--workspace', policy.workspaceRoot,
-        '--temp', tmpdir(),
+        '--temp', this.aclTempRoot(policy.workspaceRoot),
         '--mode', policy.mode,
       ]
     }
@@ -385,6 +385,36 @@ export class LocalSandboxProvider extends SandboxProvider {
       '--write-sid', workspaceWriteSid(policy.workspaceRoot),
       '--temp-write-sid', temp.writeSid,
     ]
+  }
+
+  /**
+   * Parent directory under which the private temp child is materialized.
+   * `os.tmpdir()` lives under the user profile on Windows, so a workspace
+   * rooted at the profile directory (or one of its ancestors) would contain
+   * it — a private temp there would inherit the standing workspace ACE and
+   * become reachable by every session sharing the workspace SID. Fall back
+   * to all-users directories the restricted child token can still traverse:
+   * `C:\Windows\Temp` is excluded because standard users cannot read into
+   * it, so the runner's own `--temp` existence check would fail under its
+   * restricted token. If every candidate is inside the workspace the
+   * caller's own assertion still fails closed.
+   * @param workspaceRoot - the resolved policy workspace.
+   * @returns an existing directory outside the workspace to parent the temp child.
+   */
+  private aclTempRoot(workspaceRoot: string): string {
+    const candidates = (this.internals.platform ?? process.platform) === 'win32'
+      ? [tmpdir(), process.env.ProgramData ?? 'C:\\ProgramData', process.env.PUBLIC ?? 'C:\\Users\\Public']
+      : [tmpdir(), '/var/tmp']
+    for (const candidate of candidates) {
+      try {
+        assertTempRootOutsideWorkspace(workspaceRoot, candidate)
+      } catch {
+        // Inside the workspace or unresolvable — try the next candidate.
+        continue
+      }
+      if (existsSync(candidate)) return candidate
+    }
+    return tmpdir()
   }
 
   /**
@@ -401,7 +431,8 @@ export class LocalSandboxProvider extends SandboxProvider {
    * @returns the pair's private temp directory and write capability.
    */
   private materializeAclGrant(sessionId: SessionId, workspaceRoot: string): AclTempCapability {
-    assertTempRootOutsideWorkspace(workspaceRoot, tmpdir())
+    const tempRoot = this.aclTempRoot(workspaceRoot)
+    assertTempRootOutsideWorkspace(workspaceRoot, tempRoot)
     const writeSid = workspaceWriteSid(workspaceRoot)
     if (!this.workspaceGrants.has(workspaceRoot)) {
       const grant = AclWriteGrant.create(writeSid)
@@ -423,7 +454,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     const key = JSON.stringify([String(sessionId), workspaceRoot])
     const existing = this.tempCapabilities.get(key)
     if (existing !== undefined) return existing
-    const tempDir = mkdtempSync(join(tmpdir(), 'dsh-'))
+    const tempDir = mkdtempSync(join(tempRoot, 'dsh-'))
     const tempSid = tempWriteSid(tempDir)
     let grant: AclWriteGrant | undefined
     try {

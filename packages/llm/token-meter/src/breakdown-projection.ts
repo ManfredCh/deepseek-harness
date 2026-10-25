@@ -13,6 +13,7 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 // Type-only: the `compaction/*` SessionEventMap merges (shadow-price events).
 import type {} from '@deepseek-ai/dsh-compaction'
 import { estimateMessage, estimateToolsTokens } from './estimate.ts'
+import { checkoutSurfaceTokens } from './surface-fold.ts'
 // Import for the `contextBreakdown` SessionProjectionStateMap key merge.
 import type {} from './projection.ts'
 
@@ -156,7 +157,14 @@ export const contextBreakdownProjectionDefinition = {
     surfaceTokens: 0,
     breakdown: { systemTokens: 0, toolsTokens: 0, messageTokens: 0 },
   }),
-  apply: (state, event) => {
+  apply: (state, event, history?) => {
+    if (event.type === 'session/history-checkout') {
+      const nodes = checkoutSurfaceTokens(history)
+      return withTotals(withoutClaim(state), {
+        systems: nodes.filter(node => node.system).map(node => ({ seq: node.seq, tokens: node.heuristicTokens })),
+        surfaceTokens: nodes.reduce((total, node) => total + node.heuristicTokens, 0),
+      })
+    }
     if (event.type === 'compaction/summary' || event.type === 'compaction/prune') {
       const shadowed = new Set<number>(event.data.shadowedSeqs)
       return {

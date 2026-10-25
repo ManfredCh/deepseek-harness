@@ -47,20 +47,39 @@ describe('jobs-local through a real Loader composition', () => {
     await context.loader.await()
 
     expect(context.jobs).toBeInstanceOf(LocalJobRegistry)
-    context.jobs.attachController('loader-test')
+    const detachController = context.jobs.attachController('loader-test')
+    const claims: boolean[] = []
+    context.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') claims.push(event.claimReport())
+    })
+    context.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') claims.push(event.claimReport())
+    })
     let settle!: (outcome: { status: 'killed' }) => void
-    context.jobs.start({
+    const id = context.jobs.start({
       kind: 'bash',
       label: 'hold loader slot',
-      run: () => ({
-        cancel: () => { settle({ status: 'killed' }) },
-        done: new Promise((resolve) => { settle = resolve }),
-      }),
+      run: (job) => {
+        job.append('loader output')
+        return {
+          cancel: () => { settle({ status: 'killed' }) },
+          done: new Promise((resolve) => { settle = resolve }),
+        }
+      },
     })
+    const identity = context.jobs.get(id)
+    expect(identity.registryId).toEqual(expect.any(String))
+    expect(context.jobs.readAt(id, 0).chunks.map(chunk => chunk.text).join('')).toBe('loader output')
     expect(() => context!.jobs.start({
       kind: 'bash',
       label: 'blocked loader job',
       run: () => ({ cancel: () => {}, done: Promise.resolve({ status: 'completed' }) }),
     })).toThrow('(limit: 1)')
+    detachController()
+    expect(context.jobs.get(id)).toEqual(identity)
+    settle({ status: 'killed' })
+    await context.jobs.wait(id, 1_000)
+    expect(claims).toEqual([false, false])
+    expect(context.jobs.read(id).chunks.map(chunk => chunk.text).join('')).toBe('loader output')
   })
 })

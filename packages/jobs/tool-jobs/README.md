@@ -64,6 +64,10 @@ An agent whose composition loads no `tool-jobs` cannot start background work: th
 
 -----
 
+`job_list` 与 `job_output/job_kill` 的公开 Job 结果保留可选 `registryId`。后两者接收可选 `registry_id`，先按调用者的 Session 身份检查，再在读取、等待或取消前拒绝不匹配的执行代次，错误码为 `JOB_INSTANCE_MISMATCH`。完成通知继续使用 `source.kind=tool-jobs`，其 `job` 元数据携带原生 id、代次、开始和结束时刻及终态；发送前只由同一 Registry 原子认领一次。
+
+`kill` 的第四个可选 `collected` 参数只在调用者自己交付取消结果时显式传 `true`，成功取消后由同一 Registry 记录通知已交付。模型 `job_kill` 使用该参数，因此多个控制器或工具重载不会补发重复通知；人类或 UI 取消省略它，终态通知仍按原生规则交付。取消抛错不提交该标记。
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

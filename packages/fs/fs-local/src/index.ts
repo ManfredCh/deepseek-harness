@@ -7,6 +7,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { constants as bufferConstants } from 'node:buffer'
 import { once } from 'node:events'
+import { mkdir } from 'node:fs/promises'
 import { watch } from 'chokidar'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -197,6 +198,20 @@ export class LocalFileSystem extends FileSystem {
       ...(entry.version !== undefined ? { version: entry.version } : {}),
       ...(entry.size !== undefined ? { size: entry.size } : {}),
     }))
+  }
+
+  override async createDirectory(target: FsTarget, signal?: AbortSignal): Promise<void> {
+    await this.withLock(String(target.targetKey), async () => {
+      if (signal?.aborted) throw new FsError('directory creation aborted', 'FS_ABORTED')
+      try {
+        // Use the exact canonical target checked by the policy backend, not the caller's alias.
+        await mkdir(String(target.targetKey))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new FsError('directory already exists', 'FS_STALE_VERSION', { cause: error })
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new FsError('parent directory no longer exists', 'FS_NOT_FOUND', { cause: error })
+        throw new FsError('directory creation failed', 'FS_IO_ERROR', { cause: error })
+      }
+    })
   }
 
   override async writeText(

@@ -303,4 +303,59 @@ describe('V2 system prompts through current Session and JSONL persistence', () =
       await reader.close()
     }
   })
+
+  it.each(['read', 'write'] as const)('refuses required product checkout in frozen V2 during %s open without publishing or fallback', async (access) => {
+    const sourcePath = await writeV2([
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      user('question'), request('recorded prompt'),
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'session/history-checkout', data: { throughSeq: 4, operationId: 'invalid-v2-checkout' } },
+    ])
+    const lowerPath = generationLogPath(root, undefined, id, 1, 'none')
+    await writeFile(lowerPath, JSON.stringify({ type: 'session', version: 1, id, createdAt: 1, delegationDepth: 0 }) + '\n')
+    const original = await observeFile(sourcePath), lower = await observeFile(lowerPath)
+    const ctx = await mount()
+    await expect(ctx.sessionPersistence.open(id, access)).rejects.toBeInstanceOf(SessionFormatUnsupportedError)
+    await expect(ctx.sessionPersistence.open(id, access)).rejects.toThrow(/unclassified event session\/history-checkout/)
+    expect(await observeFile(sourcePath)).toEqual(original)
+    expect(await observeFile(lowerPath)).toEqual(lower)
+    expect((await readdir(dirname(sourcePath))).filter(name => name !== 'session.lock').sort())
+      .toEqual(['session.v1.jsonl', 'session.v2.jsonl'])
+  })
+
+  it.each(['read', 'write'] as const)('refuses malformed required product checkout in V3 during %s open without publishing or fallback', async (access) => {
+    const lowerPath = await writeV2([
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      user('question'), request('valid predecessor'),
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    ])
+    const sourcePath = generationLogPath(root, undefined, id, 3, 'none')
+    const header = { type: 'session', version: 3, id, createdAt: 1, isSeeded: false, delegationDepth: 0 }
+    const rows = [
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      { type: 'system/message', surfaceOp: 'append', data: { turn: 1, step: 1, message: {
+        id: 'v3-head', role: 'system', source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+        content: [{ type: 'text', text: 'recorded prompt' }],
+      } } },
+      user('question'),
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'session/history-checkout', data: { throughSeq: 6, operationId: 'self-reference' } },
+    ]
+    await writeFile(sourcePath, [header, ...rows.map((row, seq) => ({ ...row, seq, time: seq + 10 }))]
+      .map(row => JSON.stringify(row)).join('\n') + '\n')
+    const original = await observeFile(sourcePath), lower = await observeFile(lowerPath)
+    const ctx = await mount()
+    await expect(ctx.sessionPersistence.open(id, access)).rejects.toThrow(/history checkout throughSeq.*earlier event/)
+    expect(await observeFile(sourcePath)).toEqual(original)
+    expect(await observeFile(lowerPath)).toEqual(lower)
+    expect((await readdir(dirname(sourcePath))).filter(name => name !== 'session.lock').sort())
+      .toEqual(['session.v2.jsonl', 'session.v3.jsonl'])
+  })
+
 })
