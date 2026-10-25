@@ -14,6 +14,9 @@ let dispose: () => Promise<void>
 const id = SessionId('files-test')
 const signal = () => new AbortController().signal
 const scope = () => ({ sessionId: id, workspaceRoot: root })
+/** Directory links need no SeCreateSymbolicLinkPrivilege on Windows; junctions exercise the same resolution path. */
+const dirLink = (target: string, path: string) =>
+  process.platform === 'win32' ? symlink(target, path, 'junction') : symlink(target, path)
 beforeEach(async () => {
  directory = await mkdtemp(join(tmpdir(), 'a08-files-')); root = join(directory, 'work'); outside = join(directory, 'outside')
  await mkdir(root); await mkdir(outside); mode = 'workspace-write'; live = true; ctx = new Context()
@@ -30,7 +33,7 @@ afterEach(async () => { await dispose() })
 describe('Session-scoped workspace creation over real task FS', () => {
  it('creates through a contained directory alias using the canonical target', async () => {
   await mkdir(join(root, 'target'))
-  await symlink(join(root, 'target'), join(root, 'alias'))
+  await dirLink(join(root, 'target'), join(root, 'alias'))
   const folder = await endpoint.createDirectory(scope(), 'alias', 'child', signal())
   expect(folder.absolutePath).toBe(join(root, 'target', 'child'))
   const file = await endpoint.createFile(scope(), 'alias/child', 'notes.txt', signal())
@@ -52,7 +55,7 @@ describe('Session-scoped workspace creation over real task FS', () => {
   await writeFile(join(root, 'keep.txt'), 'preserve')
   await expect(endpoint.createFile(scope(), '.', 'keep.txt', signal())).rejects.toMatchObject({ code: 'workspace-file/already-exists' })
   expect(await readFile(join(root, 'keep.txt'), 'utf8')).toBe('preserve')
-  await symlink(join(outside, 'missing'), join(root, 'dangling'))
+  await dirLink(join(outside, 'missing'), join(root, 'dangling'))
   await expect(endpoint.createFile(scope(), '.', 'dangling', signal())).rejects.toMatchObject({ code: 'workspace-file/already-exists' })
   expect(await readdir(outside)).toEqual([])
  })
@@ -63,7 +66,7 @@ describe('Session-scoped workspace creation over real task FS', () => {
   expect(await readdir(root)).toEqual([])
  })
  it('refuses outside parent and a symlink to an outside directory', async () => {
-  await symlink(outside, join(root, 'escape'))
+  await dirLink(outside, join(root, 'escape'))
   await expect(endpoint.createDirectory(scope(), outside, 'bad', signal())).rejects.toMatchObject({ code: 'workspace-file/outside-workspace' })
   await expect(endpoint.createFile(scope(), '../outside', 'bad.txt', signal())).rejects.toMatchObject({ code: 'workspace-file/outside-workspace' })
   await expect(endpoint.createDirectory(scope(), join(root, 'escape'), 'bad', signal())).rejects.toBeDefined()

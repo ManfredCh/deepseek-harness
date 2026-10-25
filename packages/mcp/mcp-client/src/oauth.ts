@@ -25,6 +25,12 @@ export interface McpOAuthBridgeRequest {
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Resolve the OAuth provider for one scoped server connection through the
+     * product credential/UI bridge.
+     * @mode waterfall
+     * @param request - owning context, server identity, OAuth config, and authorize/control handles.
+     */
     'mcp/oauth-provider'(request: McpOAuthBridgeRequest, next: () => Promise<OAuthClientProvider | undefined>): Promise<OAuthClientProvider | undefined>
   }
 }

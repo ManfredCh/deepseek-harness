@@ -448,7 +448,7 @@ Implementations must honor these semantics:
 
 - Registrations outlive producer and controller fibers. Owner and service disposal cancel live work and await compliant producers; a throwing teardown cancel force-fails only the record. Such settlements announce `cause: 'teardown'`, because a job whose owner is being destroyed has no reader left.
 - Owned-job access is fenced by the owner's session id. Ids are predictable, so authorization — not secrecy — is the boundary.
-- Settlement is first-wins: one terminal record, released waiters, then one round of contained event delivery, even against a late producer outcome. The `settled` event follows every released waiter and reports whether it released one (`awaited`), so a completion reporter can skip settlements a waiting caller already collected.
+- Settlement is first-wins: one terminal record, released waiters, then one round of contained event delivery, even against a late producer outcome. The `settled` event follows every released waiter and reports whether it released one (`awaited`), so a completion reporter can skip settlements a waiting caller already collected. Reporters atomically claim an uncollected terminal notice with `event.claimReport()`; observers never claim it or consume output.
 - A settled record stays listed until its owner's disposal, service disposal, or an explicit remove by a caller that collected the terminal state itself and never handed the id out.
 - start refuses work while no attached job controller serves the spec's owner, so a producer cannot start work that owner cannot collect or stop. One registry serves every composition in the process, so this question — and event delivery under `{ owners: 'scope' }` — is owner-relative rather than process-wide: registrations made from an unscoped context serve every owner, and registrations made under an agent composition's scope serve exactly the agents composed under it.
 - Every job owns one output ring. Pull sources named by the spec are pumped by the registry and drained once more before settlement; pushed appends land whole. The model's consuming cursor and observers' absolute offsets read the same bytes and never disturb each other.
@@ -511,9 +511,10 @@ abstract readAt(id: JobId, from: number, caller?: SessionId): JobOutputRead
  * @param id - job to cancel.
  * @param caller - killing session checked against the owner.
  * @param reason - cancellation reason forwarded verbatim to the producer.
+ * @param collected - true when the caller delivers this cancellation as its own result, suppressing a repeat completion notice.
  * @returns `requested` for live work, otherwise `already-finished`.
  */
-abstract kill(id: JobId, caller?: SessionId, reason?: string): 'requested' | 'already-finished'
+abstract kill(id: JobId, caller?: SessionId, reason?: string, collected?: true): 'requested' | 'already-finished'
 
 /**
  * Wait for settlement or timeout without cancelling the job. Caller abort

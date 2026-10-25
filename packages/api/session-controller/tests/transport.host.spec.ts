@@ -220,6 +220,7 @@ describe('SessionHistoryController', () => {
     }
     const observed = deferred<SessionObservation>()
     ctx.provide('sessionQuery', { observeSession: () => observed.promise } as never)
+    installSessionReadTestServices(ctx)
     const transport = new SessionHistoryController(ctx, vi.fn())
     const abort = new AbortController()
     const iterator = transport.follow({ address: { kind: 'session', sessionId } }, abort.signal)

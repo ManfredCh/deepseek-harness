@@ -359,6 +359,15 @@ export class WorkspaceFiles extends TypertRemoteService {
     return { root, target }
   }
 
+  /**
+   * Create one empty directory under a confined workspace parent.
+   * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
+   * @param parentPath - parent path; must resolve to a directory inside the workspace.
+   * @param name - single non-blank folder name; separators and dot segments are rejected.
+   * @param signal - caller cancellation.
+   * @returns absolute and workspace-relative paths of the created directory.
+   * @throws RemoteError when the Session is closed, the workspace denies writes, the parent is not a directory, or the name is taken or invalid.
+   */
   @Remote
   async createDirectory(workspaceFileScope: WorkspaceFileScope, parentPath: string, name: string, signal: AbortSignal): Promise<{ absolutePath: string; path: string; type: 'directory' }> {
     const policy = this.mutationPolicy(workspaceFileScope)
@@ -372,6 +381,15 @@ export class WorkspaceFiles extends TypertRemoteService {
     return { absolutePath: this.ctx.fs.processPath(target), path: workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target)), type: 'directory' }
   }
 
+  /**
+   * Create one empty file under a confined workspace parent.
+   * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
+   * @param parentPath - parent path; must resolve to a directory inside the workspace.
+   * @param name - single non-blank file name; separators and dot segments are rejected.
+   * @param signal - caller cancellation.
+   * @returns absolute and workspace-relative paths of the created file.
+   * @throws RemoteError when the Session is closed, the workspace denies writes, the parent is not a directory, or the name is taken or invalid.
+   */
   @Remote
   async createFile(workspaceFileScope: WorkspaceFileScope, parentPath: string, name: string, signal: AbortSignal): Promise<{ absolutePath: string; path: string; type: 'file' }> {
     const policy = this.mutationPolicy(workspaceFileScope)

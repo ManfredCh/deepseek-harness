@@ -113,6 +113,26 @@ interface AssembledContext {
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxmodelmessageprojection--modelmessageprojection"></a>
+
+### `ctx.modelMessageProjection` — `ModelMessageProjection`
+
+由部署持有的确定性纯消息投影。
+
+```ts cordis-catalog
+/**
+ * 从原生日志消息产生同一请求的模型输入。
+ * @param messages - 当前实际可见消息；人工、developer、tool 与二进制内容必须保持。
+ * @param context - 实际 Agent scope、会话及请求用途。
+ * @returns 同一消息身份的确定性投影。
+ */
+project(messages: readonly Message[], context: ModelMessageProjectionContext): readonly Message[]
+```
+
+Types: [Message](llm-streaming.md)
+
+Source: [`packages/core/system-prompt/src/index.ts`](../../packages/core/system-prompt/src/index.ts)
+
 <a id="ctxsystemprompt--systemprompt"></a>
 
 ### `ctx.systemPrompt` — `SystemPrompt`

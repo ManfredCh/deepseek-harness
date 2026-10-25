@@ -69,7 +69,7 @@ import { authContextFrom, credentialStoreFrom } from './auth.ts'
 import { catalogProvider, catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import { assertManagedProfileAuthority } from './managed-discovery.ts'
-import type { ResolvedPiAiProviderProfile } from './config.ts'
+import type { PiAiProviderRecords, ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
 import type { StoredModelDiscoveryProfile } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
@@ -96,13 +96,26 @@ export { supportedProtocols } from './provider.ts'
 export interface PiAiCompositionPolicy {
   /** Whether provider-native credential lookups may use the launching environment or host files. */
   readonly allowAmbientCredentials: boolean
-  /** Check the raw provider records before profile resolution or a native Config commit. */
-  validateProfiles(providers: ReturnType<Config['providers']['get']>): void
-  /** Check the actual resolved routes and models before registry publication. */
+  /**
+   * Check the raw provider records before profile resolution or a native Config commit.
+   * @param providers - provider records as loaded from Config, keyed by provider name.
+   */
+  validateProfiles(providers: PiAiProviderRecords): void
+  /**
+   * Check the actual resolved routes and models before registry publication.
+   * @param profiles - resolved provider profiles keyed by provider name.
+   */
   validateResolved(profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>): void
-  /** Reject discovery destinations before credential resolution or Fetch. */
+  /**
+   * Reject discovery destinations before credential resolution or Fetch.
+   * @param request - the model-discovery operation about to run.
+   */
   assertDiscovery(request: import('@deepseek-ai/dsh-llm').LlmModelDiscoveryOperation): void
-  /** Check the exact frozen model destination before credential or network access. */
+  /**
+   * Check the exact frozen model destination before credential or network access.
+   * @param provider - provider name of the destination model.
+   * @param baseURL - exact endpoint the request would reach.
+   */
   assertModel(provider: string, baseURL: string): void
 }
 declare module '@deepseek-ai/cordis' { interface Context { llmPiAiPolicy: PiAiCompositionPolicy } }

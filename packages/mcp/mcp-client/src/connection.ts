@@ -29,6 +29,13 @@ import type { Config } from './index.ts'
 /** 供产品资源/提示词扩展使用的同连接RPC；连接、重连与释放仍由本Provider独占。 */
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Same-connection content RPC routed through this provider for product
+     * resource and prompt extensions; the provider keeps exclusive ownership
+     * of connect, reconnect, and disposal.
+     * @mode waterfall
+     * @param request - targeted server, optional owner scope, method, params, and abort signal.
+     */
     'mcp/content-request'(request: { serverName: string; ownerScope?: object; method: 'listServers' | 'listResources' | 'readResource' | 'listResourceTemplates' | 'listPrompts' | 'getPrompt'; params: Record<string, unknown>; signal: AbortSignal }, next: () => Promise<unknown>): Promise<unknown>
   }
 }

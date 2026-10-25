@@ -443,6 +443,12 @@ Owns the default model selection independently of any Host or transport. Each op
 currentSelection(): ModelSelection
 
 /**
+ * Read the live selection without inventing a provider for a manual Session.
+ * @returns the complete selection, or undefined for an explicitly empty composition.
+ */
+optionalSelection(): ModelSelection | undefined
+
+/**
  * Save the complete default model selection. A deployment without a configuration
  * editor keeps its composition entry. Saves commit in submission order; a failed
  * save rejects its caller without blocking later saves.

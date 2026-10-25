@@ -135,7 +135,7 @@ describe('Session file uploads', () => {
     const prompting = controller.prompt(promptRequest([
       { type: 'file', receiptId: receipt.receiptId },
       { type: 'image', mediaType: 'image/png', data: 'AAAA' },
-    ]), abort.signal)
+    ]), USER_SOURCE, abort.signal)
     await vi.waitFor(() => { expect(saveImages).toHaveBeenCalledOnce() })
     const failure = expect(prompting).rejects.toThrow('cancel prompt admission')
     abort.abort(new Error('cancel prompt admission'))

@@ -1345,14 +1345,14 @@ it('request inspector uses each session directory public names and localized unk
   const turns: readonly TrajectoryTurnModel[] = [{ turn: 1, groups: [{ title: 'Step 1', cells: [{ index: 1, sourceSeq: 1, kind: 'message', text: 'response', timeSeconds: 1 }] }] }]
   const numbers = [{ turn: 1, step: 1, seq: 1, group: 'Step 1', number: 1, provider: 'raw-provider', model: 'peiri', requestConfig: { provider: 'raw-provider', model: 'peiri' } }]
   const original = JSON.stringify(numbers)
-  const view = render(<LocalizedTrajectoryTable t={t} renderImages={renderImagesStub} turns={turns} requestNumbers={numbers} modelDirectory={first} {...FOLD_PROPS} />)
+  const view = render(<LocalizedTrajectoryTable t={t} renderSlot={renderNoImages} loadImage={loadImage} turns={turns} requestNumbers={numbers} modelDirectory={first} {...FOLD_PROPS} />)
   fireEvent.click(screen.getByRole('button', { name: 'Request #1' }))
   expect(screen.getByText('Peiri')).toBeTruthy();expect(screen.getByText('Public gateway')).toBeTruthy()
-  view.rerender(<LocalizedTrajectoryTable t={t} renderImages={renderImagesStub} turns={turns} requestNumbers={[{ ...numbers[0]!, model: 'other-id' }]} modelDirectory={second} {...FOLD_PROPS} />)
+  view.rerender(<LocalizedTrajectoryTable t={t} renderSlot={renderNoImages} loadImage={loadImage} turns={turns} requestNumbers={[{ ...numbers[0]!, model: 'other-id' }]} modelDirectory={second} {...FOLD_PROPS} />)
   expect(screen.getByText('Second public name')).toBeTruthy();expect(screen.queryByText('Peiri')).toBeNull()
   act(() => { second.store.update(state => { state.groups = [] }) })
   expect(view.container.textContent).not.toContain('raw-provider');expect(view.container.textContent).not.toContain('other-id')
-  view.rerender(<LocalizedTrajectoryTable turns={turns} requestNumbers={numbers} modelDirectory={second} t={tZh} renderImages={renderImagesStub} {...FOLD_PROPS} />)
+  view.rerender(<LocalizedTrajectoryTable turns={turns} requestNumbers={numbers} modelDirectory={second} t={tZh} renderSlot={renderNoImages} loadImage={loadImage} {...FOLD_PROPS} />)
   expect(view.container.textContent).toContain('模型');expect(JSON.stringify(numbers)).toBe(original)
   first.dispose();second.dispose()
 })

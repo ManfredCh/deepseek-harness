@@ -236,7 +236,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         && workspace.sessionIds.includes(id) && !archived.includes(id)
         && (options.agentPreset === undefined || typeof listed !== 'string' || listed === options.agentPreset)
     })
-    if (blank === undefined) return this.createOwnBlank(workspace.workspaceId)
+    if (blank === undefined) {
+      return this.createNamed({
+        workspaceId: workspace.workspaceId,
+        ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
+      })
+    }
     try {
       return await this.createNamed({
         workspaceId: workspace.workspaceId,

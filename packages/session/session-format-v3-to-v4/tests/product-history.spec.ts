@@ -8,7 +8,7 @@ import { createSessionFormatCatalogWithChildren, sessionFormatCatalog } from '@d
 import { Session, SessionId, SessionLogOffset, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { assertProductHistoryEvent, remapProductHistoryReferences, restoreReleasedV3Artifact } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { RELEASED_V3_EVENT_TYPES } from '../src/index.ts'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 
 const header = { type: 'session', version: 3, id: 'alpha4-product-fixture', createdAt: 1, isSeeded: false, delegationDepth: 0 }
 const image = { type: 'image', attachment: { attachmentId: 'fixture-image', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }

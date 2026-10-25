@@ -25,7 +25,12 @@ import type { JsonSchemaNode } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 declare module '@deepseek-ai/cordis' {
   interface Events {
-    /** Provider-owned diagnostic metadata only; never model/user tool arguments. */
+    /**
+     * Provider-owned diagnostic `_meta` attached to one outbound tool call;
+     * never model or user tool arguments.
+     * @mode bail
+     * @param execution - the live tool execution being issued.
+     */
     'mcp/tool-call-metadata'(execution: Readonly<ToolExecution>): Record<string, string> | undefined
   }
 }

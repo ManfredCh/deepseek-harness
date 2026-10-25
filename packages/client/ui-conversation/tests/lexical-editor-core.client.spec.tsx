@@ -10,7 +10,7 @@ import { createHeadlessEditor } from '@lexical/headless'
 import type { LexicalEditor, NodeKey, ParagraphNode } from 'lexical'
 import {
   $createLineBreakNode, $createParagraphNode, $createTextNode, $getRoot, $getSelection,
-  $isTextNode, $isRangeSelection, $setSelection, CONTROLLED_TEXT_INSERTION_COMMAND,
+  $isTextNode, $setSelection,
 } from 'lexical'
 import type { ReferenceInsert } from '../src/client/contract/draft-editor.ts'
 import type { CommandClaim } from '../src/client/contract/input.ts'

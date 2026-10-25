@@ -2951,7 +2951,8 @@ function hostExportSubpaths(manifest: Record<string, unknown>): string[] {
     .map(([subpath]) => subpath)
     .filter(subpath => subpath !== './client'
       && !subpath.startsWith('./client/')
-      && subpath !== './remote')
+      && subpath !== './remote'
+      && subpath !== './node')
 }
 
 function clientExportSubpaths(manifest: Record<string, unknown>): string[] {

@@ -260,7 +260,11 @@ export const InputBar = memo(function InputBar({
     if (rejected !== null) showToast(rejected)
   }, [locked, machineBusy, subagent, continuable, addFiles, attachments, imageLimits, showToast, t])
 
+  // An active claim that does not declare attachment acceptance closes file
+  // intake — the same policy the submit pre-gate enforces on Enter.
+  const claimRefusesAttachments = input?.phase === 'claimed' && input.claim?.attachments !== true
   const canAcceptDrop = (subagent === null || continuable) && !locked && !machineBusy && addFiles !== undefined
+    && !claimRefusesAttachments
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>): void => {

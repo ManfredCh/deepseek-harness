@@ -1145,6 +1145,41 @@ Types: [FileAttachmentRef](attachment.md) · [ImageAttachmentRef](attachment.md)
 
 Source: [`packages/llm/llm/src/index.ts`](../../packages/llm/llm/src/index.ts)
 
+<a id="ctxllmpiaipolicy--piaicompositionpolicy"></a>
+
+### `ctx.llmPiAiPolicy` — `PiAiCompositionPolicy`
+
+Optional composition policy. Settings cannot replace this owner boundary.
+
+```ts cordis-catalog
+/**
+ * Check the raw provider records before profile resolution or a native Config commit.
+ * @param providers - provider records as loaded from Config, keyed by provider name.
+ */
+validateProfiles(providers: PiAiProviderRecords): void
+
+/**
+ * Check the actual resolved routes and models before registry publication.
+ * @param profiles - resolved provider profiles keyed by provider name.
+ */
+validateResolved(profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>): void
+
+/**
+ * Reject discovery destinations before credential resolution or Fetch.
+ * @param request - the model-discovery operation about to run.
+ */
+assertDiscovery(request: import('@deepseek-ai/dsh-llm').LlmModelDiscoveryOperation): void
+
+/**
+ * Check the exact frozen model destination before credential or network access.
+ * @param provider - provider name of the destination model.
+ * @param baseURL - exact endpoint the request would reach.
+ */
+assertModel(provider: string, baseURL: string): void
+```
+
+Source: [`packages/llm/llm-pi-ai/src/index.ts`](../../packages/llm/llm-pi-ai/src/index.ts)
+
 <a id="llm-events"></a>
 
 ### `llm/*` events

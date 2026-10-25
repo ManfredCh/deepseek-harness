@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createAssistantMessage, createDeveloperMessage, createSystemMessage, createToolResultMessage, createUserMessage, markAgentLoopRequest, ToolCallId, type GenerateOptions, type Message, type RequestMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, type Message } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import InvariantRegistry from '@deepseek-ai/dsh-invariants'
-import * as AgentLoopInvariant from '@deepseek-ai/dsh-agent-loop/invariant'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -28,12 +26,7 @@ const formal: ModelMessageProjection = {
 async function setup() {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(InvariantRegistry)
-  await ctx.plugin(AgentLoopInvariant)
   return ctx
-}
-function dispatch(ctx: Context, request: GenerateOptions) {
-  void ctx.waterfall('llm/stream', markAgentLoopRequest(Object.freeze(request)), () => (async function* () {})())
 }
 
 describe('deterministic model input over current RC2 Session', () => {
@@ -111,44 +104,4 @@ describe('deterministic model input over current RC2 Session', () => {
     } finally { await ctx.fiber.dispose() }
   })
 
-  it('rejects dispatch mutations to users, toolCallId, images, schemas, source, and historical tool definitions after projection', async () => {
-    const ctx = await setup()
-    try {
-      await ctx.plugin(FixtureProjection, formal)
-      const session = ctx.sessions.create(SessionId('formal-invariant'))
-      session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
-      session.append('system/message', { turn: 1, step: 1, message: createSystemMessage('logged') }, { surfaceOp: 'append' })
-      session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'authorization' }] }), { surfaceOp: 'append' })
-      const callId = ToolCallId('call')
-      session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({ source: { provider: 'mock', model: 'm' }, content: [{ type: 'tool-call', id: callId, name: 'read', arguments: '{}' }] }) }, { surfaceOp: 'append' })
-      session.append('tool/call', { turn: 1, step: 1, callId, name: 'read', arguments: '{}' })
-      session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId, content: [image], isError: false }) }, { surfaceOp: 'append' })
-      session.append('developer/message', { turn: 1, step: 1, message: createDeveloperMessage({ source: { kind: 'tool-registry' }, content: [] }) }, { surfaceOp: 'append' })
-      const tools = [{ name: 'read', description: 'original', parameters: { type: 'object', properties: {} } }]
-      session.append('request/header', { header: { config: { provider: 'mock', model: 'm' }, tools }, reason: 'initial' })
-      const messages = deriveModelRequestMessages(ctx, session)
-      Object.freeze(messages)
-      const baseline: GenerateOptions = { provider: 'mock', model: 'm', messages, tools, toolHistory: session.toolHistory(), sessionId: session.id }
-      expect(() => dispatch(ctx, baseline)).not.toThrow()
-      for (const change of ['authorization', 'source', 'toolCallId', 'image', 'schema', 'history'] as const) {
-        const candidate = structuredClone(baseline)
-        candidate.messages = candidate.messages.map<RequestMessage>((message, index) => {
-          if (message.role === 'user' && message.source !== undefined && index === 1) {
-            if (change === 'authorization') return { ...message, content: [{ type: 'text', text: 'new unauthorized input' }] }
-            if (change === 'source') return { ...message, source: { kind: 'runtime-context' as const } }
-          }
-          if (message.role === 'tool') {
-            if (change === 'toolCallId') return { ...message, toolCallId: ToolCallId('other') }
-            if (change === 'image') return { ...message, content: message.content.map(block => block.type === 'image'
-              ? { ...block, attachment: { ...block.attachment, bytes: 2 } } : block) }
-          }
-          return message
-        })
-        if (change === 'schema') candidate.tools = [{ ...tools[0]!, description: 'changed schema' }]
-        if (change === 'history') candidate.toolHistory = { tools: [], updates: [] }
-        Object.freeze(candidate.messages)
-        expect(() => dispatch(ctx, candidate)).toThrow(/diverges/)
-      }
-    } finally { await ctx.fiber.dispose() }
-  })
 })

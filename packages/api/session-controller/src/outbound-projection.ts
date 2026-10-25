@@ -66,6 +66,8 @@ export function sessionOutboundProjection(ctx: Context): SessionOutboundProjecto
       const data = projected.data
       if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
         if (!record(data)) throw new Error('sessionOutboundProjection returned invalid Assistant data')
+        // Migrated generations may carry an Assistant row without its stream; project only what exists.
+        if (!Array.isArray(event.data.stream)) return { ...event, data: projectedJson(data) }
         return { ...event, data: projectedJson({ ...data, stream: projectStream(event.data.stream, service) }) }
       }
       return { ...event, data: projectedJson(data) }

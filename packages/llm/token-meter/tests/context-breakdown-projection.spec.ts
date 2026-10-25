@@ -310,7 +310,7 @@ describe('contextBreakdown session projection', () => {
     expect(JSON.stringify(state)).toBe(before)
 
     appendSummaryMeter(ctx, session, replacement.seq, replacement.seq)
-    const claimed = session.snapshotEvents().reduce(definition.apply, definition.init())
+    const claimed = session.snapshotEvents().reduce((previous, event) => definition.apply(previous, event), definition.init())
     const armed = JSON.stringify(claimed)
     const elsewhere = { ...replacement, seq: SessionSeq(session.seq), surfaceOp: { op: 'replace', startSeq: first, endSeq: first } } as SessionEvent
     expect(() => definition.apply(claimed, elsewhere)).toThrow('has no adjacent shadow price')
@@ -470,13 +470,13 @@ describe('contextBreakdown session projection', () => {
 
   it('replays version-4 positional checkpoints that placed a late system after queued users', async () => {
     const { ctx, session } = await harness()
-    const user = appendUser(session, 'queued user')
+    appendUser(session, 'queued user')
     const head = appendSystem(session, 'system head')
     const current = ctx.sessionProjections.checkpoint(session)
     const row = current['contextBreakdown']!
     const state = ctx.sessionProjections.stateOf(session, 'contextBreakdown')!
-    expect(state.nodes.map(node => node.seq)).toEqual([head, user])
-    const stale = { ...current, contextBreakdown: { ...row, ver: 4, val: { ...state, nodes: [...state.nodes].reverse() } } }
+    expect(state.systems.map(node => node.seq)).toEqual([head])
+    const stale = { ...current, contextBreakdown: { ...row, ver: 4, val: { ...state, systems: [...state.systems].reverse() } } }
     expect(ctx.sessionProjections.viewCheckpoint(stale).contextBreakdown).toBeUndefined()
     expect(ctx.sessionProjections.restoreFloor(stale)).toBe(0)
     const restored = ctx.sessionProjections.restore(

@@ -360,7 +360,7 @@ export class CommandRuntime extends TypertRemoteService {
    *
    * @param agent - exact receiving agent.
    * @param line - complete slash-command line.
-   * @param submittedAttachments - encoded images and staged file receipts accompanying the line,
+   * @param attachments - encoded images and staged file receipts accompanying the line,
    *   in submission order; empty for a plain invocation.
    * @param signal - cancellation signal owned by the UI request.
    * @returns the settled execution (result + lifecycle pairing id), or
@@ -368,7 +368,18 @@ export class CommandRuntime extends TypertRemoteService {
    */
   @Remote
   execute(agent:Agent,line:string,attachments:readonly CommandSubmitAttachment[],signal:AbortSignal):Promise<CommandExecution|undefined>{return this.executeWithDisplay(agent,line,attachments,signal)}
-  /** Optional presentation metadata uses its own entry; legacy execute stays unchanged. */
+  /**
+   * Parse and execute a known command like {@link execute}, carrying the
+   * caller's presentation metadata through to the settled execution.
+   * @param agent - exact receiving agent.
+   * @param line - complete slash-command line.
+   * @param attachments - encoded images and staged file receipts accompanying the line,
+   *   in submission order; empty for a plain invocation.
+   * @param display - caller-supplied presentation metadata recorded on the execution.
+   * @param signal - cancellation signal owned by the UI request.
+   * @returns the settled execution (result + lifecycle pairing id), or
+   *   `undefined` when syntax or name does not resolve.
+   */
   @Remote
   executeDisplayed(agent:Agent,line:string,attachments:readonly CommandSubmitAttachment[],display:CommandDisplayMetadata,signal:AbortSignal):Promise<CommandExecution|undefined>{return this.executeWithDisplay(agent,line,attachments,signal,display)}
   private async executeWithDisplay(

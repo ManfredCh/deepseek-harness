@@ -232,6 +232,9 @@ export interface Config {
   providers: Volatile<Record<string, PiAiProviderProfile>>
 }
 
+/** Deep-readonly provider record snapshot as returned by `Config.providers.get()`, keyed by route. */
+export type PiAiProviderRecords = ReturnType<Config['providers']['get']>
+
 /** Plain options accepted by the provider resolver. */
 export type Options = { [K in keyof Config]?: Config[K] extends Volatile<infer T> ? T : Config[K] }
 

@@ -171,9 +171,16 @@ describe('SessionMediaReferences /api/file', () => {
       const path = join(outside, 'image.png')
       await writeFile(path, PNG_BYTES)
       expect(await responseBytes(await route.call(path))).toEqual(PNG_BYTES)
-      const link = join(root, 'linked.png')
-      await symlink(path, link)
-      expect(await responseBytes(await route.call(link))).toEqual(PNG_BYTES)
+      if (process.platform === 'win32') {
+        // File symlinks need SeCreateSymbolicLinkPrivilege; directory junctions exercise the same resolution.
+        const linkDir = join(root, 'linked')
+        await symlink(outside, linkDir, 'junction')
+        expect(await responseBytes(await route.call(join(linkDir, 'image.png')))).toEqual(PNG_BYTES)
+      } else {
+        const link = join(root, 'linked.png')
+        await symlink(path, link)
+        expect(await responseBytes(await route.call(link))).toEqual(PNG_BYTES)
+      }
     } finally {
       await rm(outside, { recursive: true, force: true })
     }

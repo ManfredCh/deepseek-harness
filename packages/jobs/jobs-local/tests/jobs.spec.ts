@@ -181,7 +181,7 @@ describe('LocalJobRegistry.start', () => {
       const firstView = first.jobs.get(firstId)
       const siblingView = first.jobs.get(siblingId)
       const secondView = second.jobs.get(secondId)
-      expect(firstId).toBe(secondId)
+      expect(firstId).not.toBe(secondId)
       expect(firstView.registryId).toEqual(expect.any(String))
       expect(siblingView.registryId).toBe(firstView.registryId)
       expect(first.jobs.list()[0]?.registryId).toBe(firstView.registryId)

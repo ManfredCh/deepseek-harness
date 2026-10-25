@@ -1128,6 +1128,7 @@ describe('UiWorkspaceService', () => {
       workspaces: workspaceState([workspace('a', [sid('stale')])]),
       configureSessions: (sessions) => { sessions.create.mockResolvedValueOnce(sid('fresh')) },
     })
+    b.uiWorkspace.openSession(sid('stale'))
 
     await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('fresh'))
 
@@ -1139,6 +1140,7 @@ describe('UiWorkspaceService', () => {
       sessions: sessionState([summary('blank', { blank: true, cwd: '/w/a' })], 'pending'),
       workspaces: workspaceState([workspace('a', [sid('blank')])]),
     })
+    b.uiWorkspace.openSession(sid('blank'))
 
     await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('blank'))
 
@@ -1156,6 +1158,7 @@ describe('UiWorkspaceService', () => {
         sessions.refreshProjections.mockRejectedValueOnce(failure)
       },
     })
+    b.uiWorkspace.openSession(sid('stale'))
 
     await expect(b.uiWorkspace.connectWorkspace(wid('a'))).resolves.toBe(sid('fresh'))
 
@@ -1241,6 +1244,8 @@ describe('UiWorkspaceService', () => {
       sessions: sessionState([summary('blank', { blank: true, cwd: '/w/a' })], 'pending'),
       workspaces: workspaceState([workspace('a', [sid('blank')])]),
     })
+    b.uiWorkspace.openSession(sid('blank'))
+    b.sessions.retain.mockClear()
     b.uiWorkspace.startSession(wid('a'), { agentPreset: 'ptc' })
     await vi.waitFor(() => {
       expect(b.sessions.retain).toHaveBeenCalledExactlyOnceWith(sid('blank'), { source: 'mainView' })
@@ -1255,6 +1260,7 @@ describe('UiWorkspaceService', () => {
       workspaces: workspaceState([workspace('a', [sid('blank')])]),
       configureSessions: (sessions) => { sessions.create.mockReturnValue(acquired.promise) },
     })
+    b.uiWorkspace.openSession(sid('blank'))
     const plain = b.uiWorkspace.connectWorkspace(wid('a'))
     const creator = b.uiWorkspace.connectWorkspace(wid('a'), { agentPreset: 'ptc' })
     const again = b.uiWorkspace.connectWorkspace(wid('a'), { agentPreset: 'ptc' })
@@ -1273,6 +1279,7 @@ describe('UiWorkspaceService', () => {
       workspaces: workspaceState([workspace('a', [sid('blank')])]),
       configureSessions: (sessions) => { sessions.create.mockReturnValueOnce(earliest.promise) },
     })
+    b.uiWorkspace.openSession(sid('blank'))
     const plain = b.uiWorkspace.connectWorkspace(wid('a'))
     const creator = b.uiWorkspace.connectWorkspace(wid('a'), { agentPreset: 'ptc' })
     const latest = b.uiWorkspace.connectWorkspace(wid('a'))

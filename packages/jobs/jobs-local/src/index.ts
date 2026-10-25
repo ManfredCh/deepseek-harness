@@ -163,7 +163,6 @@ export class LocalJobRegistry extends JobRegistry {
   private readonly pumpPollMs: number
   private store = new Map<JobId, TrackedJob>()
   private readonly registryId = JobRegistryId(randomUUID())
-  private counters = new Map<string, number>()
   /**
    * Controllers and scoped subscriptions layered by the scope that registered
    * them, in the tools-registry shape: a contribution files into its

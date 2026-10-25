@@ -348,20 +348,20 @@ export interface SubmitAttempt {
  * event payloads (leading command chip, enter snapshots, settlement decisions).
  */
 export type InputEvent =
-  /** Editor content changed; carries the claim of the leading command chip, if any (zero effects). */
-  | { readonly type: 'draft-changed'; readonly command: CommandClaim | undefined }
+  /** Editor content changed: the leading command chip's claim, if any, plus the clipboard projection for retention checks (zero effects). */
+  | { readonly type: 'draft-changed'; readonly draft: string; readonly command: CommandClaim | undefined }
   /** The editor inserted a command chip: enter claimed. */
   | { readonly type: 'claim'; readonly claim: CommandClaim }
   /** Enter submission with the current clipboard projection. */
   | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission; readonly hasAttachments?: boolean }
   | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }
   | { readonly type: 'adjudication-failed'; readonly attempt: SubmitAttempt; readonly message: string }
-  /** Settlement carries the leading command chip's claim, which the claim follows after a failure. */
+  /** Settlement carries the live draft, which decides whether a failed claimed send stays claimed. */
   | {
     readonly type: 'submit-settled'
     readonly attempt: SubmitAttempt
     readonly ok: boolean
-    readonly command: CommandClaim | undefined
+    readonly draft: string
     readonly outcome?: SubmitOutcome
     readonly message?: string
   }

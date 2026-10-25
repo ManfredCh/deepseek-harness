@@ -136,4 +136,65 @@ register(server: string, provider: McpResourceProvider): () => void
 ```
 
 Source: [`packages/mcp/mcp-resources/src/index.ts`](../../packages/mcp/mcp-resources/src/index.ts)
+
+<a id="mcp-events"></a>
+
+### `mcp/*` events
+
+<a id="mcpcontent-request--waterfall"></a>
+
+#### `mcp/content-request` — waterfall
+
+Same-connection content RPC routed through this provider for product resource and prompt extensions; the provider keeps exclusive ownership of connect, reconnect, and disposal.
+
+```ts cordis-catalog
+/**
+ * Same-connection content RPC routed through this provider for product
+ * resource and prompt extensions; the provider keeps exclusive ownership
+ * of connect, reconnect, and disposal.
+ * @mode waterfall
+ * @param request - targeted server, optional owner scope, method, params, and abort signal.
+ */
+'mcp/content-request'(request: { serverName: string; ownerScope?: object; method: 'listServers' | 'listResources' | 'readResource' | 'listResourceTemplates' | 'listPrompts' | 'getPrompt'; params: Record<string, unknown>; signal: AbortSignal }, next: () => Promise<unknown>): Promise<unknown>
+```
+
+Source: [`packages/mcp/mcp-client/src/connection.ts`](../../packages/mcp/mcp-client/src/connection.ts)
+
+<a id="mcpoauth-provider--waterfall"></a>
+
+#### `mcp/oauth-provider` — waterfall
+
+Resolve the OAuth provider for one scoped server connection through the product credential/UI bridge.
+
+```ts cordis-catalog
+/**
+ * Resolve the OAuth provider for one scoped server connection through the
+ * product credential/UI bridge.
+ * @mode waterfall
+ * @param request - owning context, server identity, OAuth config, and authorize/control handles.
+ */
+'mcp/oauth-provider'(request: McpOAuthBridgeRequest, next: () => Promise<OAuthClientProvider | undefined>): Promise<OAuthClientProvider | undefined>
+```
+
+Source: [`packages/mcp/mcp-client/src/oauth.ts`](../../packages/mcp/mcp-client/src/oauth.ts)
+
+<a id="mcptool-call-metadata--bail"></a>
+
+#### `mcp/tool-call-metadata` — bail
+
+Provider-owned diagnostic `_meta` attached to one outbound tool call; never model or user tool arguments.
+
+```ts cordis-catalog
+/**
+ * Provider-owned diagnostic `_meta` attached to one outbound tool call;
+ * never model or user tool arguments.
+ * @mode bail
+ * @param execution - the live tool execution being issued.
+ */
+'mcp/tool-call-metadata'(execution: Readonly<ToolExecution>): Record<string, string> | undefined
+```
+
+Types: [ToolExecution](tools.md)
+
+Source: [`packages/mcp/mcp-client/src/tools.ts`](../../packages/mcp/mcp-client/src/tools.ts)
 <!-- END GENERATED cordis-surface -->
