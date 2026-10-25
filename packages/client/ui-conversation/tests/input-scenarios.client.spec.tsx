@@ -36,6 +36,7 @@ import { SessionInputShell } from '../src/client/input/facade.ts'
 import { $replaceDetectSpanWithText } from '../src/client/input/editor/span-map.ts'
 import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
+import type { ComposerBlock } from '../src/client/contract/composer-blocks.ts'
 import { zh } from '../src/client/locales.ts'
 
 // Every fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
@@ -65,6 +66,7 @@ function commandSource(
   const resolve = (name: string): FakeCommand | undefined => commands.find(c => c.name === name)
   const leadingClaim = (desc: FakeCommand): CommandClaim => ({
     name: desc.name,
+    kind: 'host-command',
     token: `/${desc.name} `,
     ...(desc.input !== undefined ? { hint: desc.input.hint } : {}),
     ...(desc.input?.attachments === true ? { attachments: true } : {}),
@@ -122,7 +124,7 @@ const COMMANDS: FakeCommand[] = [
 const PNG: SubmitAttachment = { type: 'image', mediaType: 'image/png', data: 'AA==' }
 
 /** Real scope bench: a Controller-owned Session scope + InputTriggerController + shell listeners. */
-async function scopedBench(register?: (inputTriggers: InputTriggerService) => void) {
+async function scopedBench(register?: (inputTriggers: InputTriggerService) => void, blocked?: ComposerBlock) {
   const runtime = await SlotTestRuntime.create()
   onTestFinished(() => runtime.dispose())
   const ctx = runtime.ctx
@@ -203,6 +205,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     useStopShortcut: bindSnapshotSelector(createSnapshotStore<readonly string[]>([])),
     t: makeTranslate(zh, commonZh),
     variant: 'composer',
+    ...blocked === undefined ? {} : { blocked },
   }
   const view = render(<InputBar {...barProps} />)
   const textarea = view.container.querySelector<HTMLDivElement>('[data-composer-input]')!
@@ -271,6 +274,32 @@ describe('scenario A: menu-pick /goal, type args, enter submits', () => {
     await vi.waitFor(() => { expect(b.shell.snapshot.draft).toBe('') })
     expect(b.shell.snapshot.phase).toBe('plain')
     expect(b.view.getByText('已执行 /goal 发布 v1')).toBeTruthy()
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+})
+
+describe('model-unavailable: registered native menu to claimed command', () => {
+  it('disabled plain editor opens the normal command menu, retains a Host claim and submits without a prompt', async () => {
+    const execute = vi.fn(() => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const { source } = commandSource([{ name: 'list_mcp_servers', description: 'Read registered MCP servers', input: { hint: 'Optional filter' } }], execute)
+    const b = await scopedBench(triggers => { triggers.registerSource(source) }, { kind: 'model-unavailable', reason: 'no model' })
+    expect(b.textarea.getAttribute('contenteditable')).toBe('false')
+    const menuButton = b.view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!
+    expect(menuButton.disabled).toBe(false)
+    fireEvent.click(menuButton)
+    await vi.waitFor(() => {
+      const menu = b.controller.menu.getSnapshot()
+      expect(menu.open).toBe(true)
+      expect(menu.groups[0]?.items[0]?.name).toBe('list_mcp_servers')
+    })
+    act(() => { b.controller.pick('command', 0) })
+    expect(b.shell.snapshot.claim?.kind).toBe('host-command')
+    expect(b.textarea.getAttribute('contenteditable')).toBe('true')
+    b.type('/list_mcp_servers local')
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    await vi.waitFor(() => { expect(execute).toHaveBeenCalledExactlyOnceWith('/list_mcp_servers local', []) })
+    await vi.waitFor(() => { expect(b.shell.snapshot.phase).toBe('plain') })
+    expect(b.textarea.getAttribute('contenteditable')).toBe('false')
     expect(b.sink).not.toHaveBeenCalled()
   })
 })

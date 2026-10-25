@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks'
 import { scheduler } from 'node:timers/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-commands/types'
 import type { ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectionSnapshot } from '@deepseek-ai/dsh-session-projection'
@@ -49,6 +50,7 @@ export function applySessionListMetadata(
   event: SessionEvent,
 ): SessionListMetadata {
   const blank = state.blank && event.type !== 'turn/start'
+    && !(event.type === 'command/done' && event.data.kind === 'success' && event.data.retainsSession === true)
   const lastPromptAt = event.type === 'user/message' && event.data.source.kind === 'user'
     ? event.time
     : state.lastPromptAt
@@ -87,7 +89,7 @@ export class ApiSessionList {
       init: () => ({ blank: true, lastPromptAt: null }),
       apply: applySessionListMetadata,
       wire: { viewSchema: sessionListMetadataSchema, view: state => state },
-      stateVersion: 1,
+      stateVersion: 2,
     })
     ctx.inject(['attachments'], (attachmentCtx) => {
       ctx.sessionProjections.register<'imageLimits', null>({

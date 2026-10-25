@@ -34,6 +34,8 @@ export interface DirectoryPickerNativeCapability {
  */
 export interface DirectoryPickerBrowseCapability {
   kind: 'browse'
+  /** Public user directory offered by this provider, independent of a process's isolated HOME. */
+  readonly homeDirectory?: string
   /**
    * List one directory level.
    * @param path - absolute directory to list; absent lists the home directory.

@@ -1,5 +1,6 @@
 /** Chat-owned Slot declarations and composed component props. */
 import type { RefObject } from 'react'
+import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -288,6 +289,8 @@ export interface ChatScrollPosition {
 
 /** Shared settings source for the performance row, composer, and turn tail. */
 export interface PerformanceUsageInjected {
+  /** Optional existing session model directory used only for public labels. */
+  modelDirectory?: ModelDirectory | undefined
   hooks: {
     /** Accepted performance and usage detail preference. */
     performanceUsage: ObservableSnapshot<PerformanceUsageMode>

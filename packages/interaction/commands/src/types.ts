@@ -134,6 +134,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'command/done': {
       commandId: CommandId
       kind: 'success' | 'error'
+      /** Only the resolved definition's successful persisted user work can retain this Session; never client input. */
+      retainsSession?: true
       text?: string
       sourceEventSeq?: import('@deepseek-ai/dsh-session/types').SessionSeq
       display?: CommandDisplayMetadata

@@ -34,6 +34,7 @@ import type { ProviderRequestId } from './brand.ts'
 import { callConfigEquals } from './call-config.ts'
 import type { ConfigureCall, LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
+import { llmContinuationBindingFailure } from './public-diagnostic.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
 import { normalizeApiKey } from './api-key.ts'
 import {
@@ -963,6 +964,9 @@ export class LlmRuntime extends TypertRemoteService {
     configure?: ConfigureCall,
   ): Promise<PreparedLlmCall> {
     signal?.throwIfAborted()
+    const continuationFailure = llmContinuationBindingFailure(signal, config.provider, config.model, this.adapters.get(config.provider)?.adapter)
+    if (continuationFailure) throw new LlmError('Central continuation binding expired or changed; reconcile the original request before resubmitting.',
+      'CENTRAL_CONTINUATION_BINDING_INVALID', { diagnostic: continuationFailure })
     const { provider, model, ...controls } = config
     const registration = this.registration(provider)
     const adapterCall = await registration.adapter.prepareCall(provider, model, signal)
@@ -1071,6 +1075,10 @@ export class LlmRuntime extends TypertRemoteService {
   ): AsyncGenerator<StreamChunk> {
     let iterator: AsyncIterator<StreamChunk>
     try {
+      const continuationFailure = llmContinuationBindingFailure(options.signal, options.provider, options.model,
+        prepared?.registration.adapter ?? this.adapters.get(options.provider)?.adapter)
+      if (continuationFailure) throw new LlmError('Central continuation binding expired or changed before dispatch; reconcile the original request before resubmitting.',
+        'CENTRAL_CONTINUATION_BINDING_INVALID', { diagnostic: continuationFailure })
       const registration = prepared?.registration ?? this.registration(options.provider)
       const adapter = registration.adapter
       let modelInfo: LlmResolvedModelInfo

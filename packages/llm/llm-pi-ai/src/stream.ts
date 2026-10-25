@@ -10,7 +10,7 @@
 
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { CONTEXT_WINDOW_EXCEEDED_CODE, diagnosticFromProviderError, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
-import type { FinishReason, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { FinishReason, LlmFailureDiagnostic, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { isContextOverflow } from '@earendil-works/pi-ai/utils/overflow'
 import type { AssistantMessage, AssistantMessageEvent, Usage as PiUsage } from '@earendil-works/pi-ai'
 import { toPiReplayState } from './replay.ts'
@@ -71,6 +71,12 @@ function classifyPiAiError(message: string): string {
   return 'PI_AI_ERROR'
 }
 
+/** 仅已验证的模型传输两类诊断覆盖泛化文字分类；不改变副作用或重试许可。 */
+function modelDiagnosticCode(fallback: string, diagnostic: LlmFailureDiagnostic | undefined): string {
+  return diagnostic?.domain === 'model' && (diagnostic.code === 'TIMEOUT' || diagnostic.code === 'TRANSPORT')
+    ? diagnostic.code : fallback
+}
+
 /**
  * Map a terminal pi-ai event to the harness finish reason.
  * @param message - the assistant message carried by the `done` or `error` event.
@@ -129,7 +135,7 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
       const parsed = diagnosticFromProviderError(text)
       if (parsed.invalid) return { kind: 'error', failure: { code: 'CENTRAL_DIAGNOSTIC_INVALID', message: '中央模型诊断无效；原请求结果待核，不重新提交。', diagnostic: { version: 1, domain: 'model', code: 'CENTRAL_DIAGNOSTIC_INVALID', stage: 'diagnostic_decode', fieldPath: null, retryable: false, effect: 'unknown', requestId: null } } }
       return { kind: 'error', failure: { message: parsed.diagnostic ? '模型请求未完成；请根据公开阶段和原请求身份先核实结果。' : text,
-        code: classifyPiAiError(text), ...parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {} } }
+        code: modelDiagnosticCode(classifyPiAiError(text), parsed.diagnostic), ...parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {} } }
     }
   }
 }
@@ -237,7 +243,8 @@ export async function* toStreamChunks(
             code: 'CENTRAL_DIAGNOSTIC_INVALID', stage: 'diagnostic_decode', fieldPath: null, retryable: false,
             effect: 'unknown' as const, requestId: null } : wire.diagnostic
           if (diagnostic) reason = { ...originalReason, failure: { ...originalReason.failure,
-            code: wire.invalid && originalReason.kind !== 'aborted' ? 'CENTRAL_DIAGNOSTIC_INVALID' : originalReason.failure.code,
+            code: originalReason.kind === 'aborted' ? originalReason.failure.code : wire.invalid ? 'CENTRAL_DIAGNOSTIC_INVALID'
+              : modelDiagnosticCode(originalReason.failure.code, diagnostic),
             message: '模型请求未完成；请根据公开阶段和原请求身份先核实结果。', diagnostic } }
         }
         yield {

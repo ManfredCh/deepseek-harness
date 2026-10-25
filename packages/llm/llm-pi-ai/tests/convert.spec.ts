@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentStore, ImageAttachmentRef, ImageRequestTarget, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { createToolResultMessage, createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage, parseLlmFailureDiagnostic } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-works/pi-ai'
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages'
@@ -1024,4 +1024,54 @@ describe('toStreamChunks defensive branches', () => {
     )))
     expect(chunks[0]).toEqual({ type: 'tool-call-delta', index: 0, id: '', argumentsDelta: '{}' })
   })
+})
+
+
+describe('validated model wire diagnostic routing code', () => {
+  function diagnostic(domain: 'model' | 'search', code: string, effect: 'reserved' | 'unknown' = 'reserved') {
+    const value = parseLlmFailureDiagnostic({ version: 1, domain, code, stage: 'upstream_headers',
+      fieldPath: null, retryable: false, effect, requestId: 'fixture-typed-code' })
+    if (!value) throw new Error('fixture strict diagnostic invalid')
+    return value
+  }
+  const error = () => assistant({ stopReason: 'error', errorMessage: 'Model attempt failed; the original request can continue once.' })
+
+  it.each([['TIMEOUT', 'reserved'], ['TRANSPORT', 'reserved'], ['TIMEOUT', 'unknown']] as const)('routes valid model %s with %s effect instead of losing it to generic pi-ai wording', async (code, effect) => {
+    const d = diagnostic('model', code, effect)
+    const chunks = await collect(toStreamChunks(feed({ type: 'error', reason: 'error', error: error() }), undefined, undefined, undefined,
+      () => ({ invalid: false, diagnostic: d })))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code, diagnostic: d } } })
+  })
+
+  it('keeps caller ABORTED above a valid model TIMEOUT wire diagnostic', async () => {
+    const abort = new AbortController(); abort.abort('user')
+    const d = diagnostic('model', 'TIMEOUT')
+    const chunks = await collect(toStreamChunks(feed({ type: 'error', reason: 'error', error: error() }), undefined, abort.signal, undefined,
+      () => ({ invalid: false, diagnostic: d })))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', diagnostic: d } } })
+  })
+
+  it('keeps invalid diagnostic blocking above a stale valid TIMEOUT and preserves unknown effect', async () => {
+    const d = diagnostic('model', 'TIMEOUT')
+    const chunks = await collect(toStreamChunks(feed({ type: 'error', reason: 'error', error: error() }), undefined, undefined, undefined,
+      () => ({ invalid: true, diagnostic: d })))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: {
+      code: 'CENTRAL_DIAGNOSTIC_INVALID', diagnostic: { code: 'CENTRAL_DIAGNOSTIC_INVALID', retryable: false, effect: 'unknown' },
+    } } })
+  })
+
+  it.each([['search', 'TIMEOUT'], ['model', 'AUTH']] as const)('does not upgrade %s diagnostic code %s into a model transport retry code', async (domain, code) => {
+    const d = diagnostic(domain, code, 'unknown')
+    const chunks = await collect(toStreamChunks(feed({ type: 'error', reason: 'error', error: error() }), undefined, undefined, undefined,
+      () => ({ invalid: false, diagnostic: d })))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'PI_AI_ERROR', diagnostic: d } } })
+  })
+  it('also uses strict model TRANSPORT when pi-ai carries the parsed error as JSON text', () => {
+    const d = diagnostic('model', 'TRANSPORT', 'unknown')
+    const reason = mapStopReason(assistant({ stopReason: 'error', errorMessage: JSON.stringify({ error: {
+      message: 'Model attempt ended.', diagnostic: d,
+    } }) }))
+    expect(reason).toMatchObject({ kind: 'error', failure: { code: 'TRANSPORT', diagnostic: d } })
+  })
+
 })

@@ -1119,3 +1119,22 @@ it('resolves the exact pi-ai image budget for screenshot coordinates', () => {
     .toEqual({ width: 100, height: 100, maxBytes: 50_000 })
   expect(() => adapter.imageRequestTarget('missing', 'deepseek-flash', IMAGE_REF)).toThrow('does not own provider')
 })
+
+
+describe('real HTTP/SSE central diagnostic routing', () => {
+  it.each(['TIMEOUT', 'TRANSPORT'])('retains validated model %s at the top-level failure through the real pi-ai parser', async code => {
+    const diagnostic = { version: 1, domain: 'model', code, stage: 'upstream_headers', fieldPath: null,
+      retryable: false, effect: 'reserved', requestId: 'fixture-headers-code' }
+    const server = await mockServer([{ events: [JSON.stringify({ error: { type: 'upstream_error', code,
+      message: 'Model attempt failed; the original request can continue once.', diagnostic } })] }])
+    const ctx = new Context()
+    try {
+      await ctx.plugin(LlmRuntime)
+      ctx.llm.registerAdapter(['central'], adapterOf({ central: { api: 'openai-completions', baseURL: server.url,
+        models: [{ id: 'fixture-model' }] } }))
+      const result = await assemble(ctx, { provider: 'central', model: 'fixture-model', messages: [] })
+      expect(result.finish).toMatchObject({ kind: 'error', failure: { code, diagnostic } })
+      expect(server.requests).toHaveLength(1)
+    } finally { await ctx.fiber.dispose() }
+  })
+})

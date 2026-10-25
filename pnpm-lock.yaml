@@ -3587,6 +3587,9 @@ importers:
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
     devDependencies:
+      '@deepseek-ai/dsh-client-ui-model-selection':
+        specifier: workspace:*
+        version: link:../ui-model-selection
       '@deepseek-ai/cordis':
         specifier: workspace:~
         version: link:../../../vendor/cordis
@@ -6338,6 +6341,9 @@ importers:
 
   packages/client/ui-trajectory:
     devDependencies:
+      '@deepseek-ai/dsh-client-ui-model-selection':
+        specifier: workspace:*
+        version: link:../ui-model-selection
       '@deepseek-ai/cordis':
         specifier: workspace:~
         version: link:../../../vendor/cordis

@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { PerformanceUsageMode } from '../../chat-settings.ts'
@@ -79,7 +80,7 @@ export function registerChatNodeRenderers(
     name: 'conversation.chat.node',
     key: 'turn-tail',
     locale: NS,
-    inject: () => ({ hooks: { performanceUsage } }),
+    inject: (sessionId) => ({ hooks: { performanceUsage }, modelDirectory: ctx.get('modelDirectories')?.directoryFor(sessionId) }),
     children: {
       'conversation.chat.turnTail': { kind: 'list', scope: 'session' },
       'conversation.chat.assistant-actions': { kind: 'list', scope: 'session' },

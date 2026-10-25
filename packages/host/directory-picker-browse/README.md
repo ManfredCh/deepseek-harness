@@ -29,7 +29,7 @@ Compose this backend when a workspace directory must be chosen without an OS cho
 
 ### Listing a directory
 
-`list(path?)` returns one directory level: name-sorted child directories with their absolute paths, a `hidden` flag (dot-prefixed on POSIX), a `home` anchor, and `crumbs` — the root-to-target ancestor chain where every crumb is a jump target and the root is labeled by its full path. An absent path lists the host account's home directory. One call returns at most `maxEntries` rows (config, default 1,000 — the bound GitHub's web UI applies to directory listings), and a cut level reports `truncated: true` so the client can say the level is incomplete. Symlinks to directories are followed; broken and cyclic links are skipped.
+`list(path?)` returns one directory level: name-sorted child directories with their absolute paths, a `hidden` flag (dot-prefixed on POSIX), a `home` anchor, and `crumbs` — the root-to-target ancestor chain where every crumb is a jump target and the root is labeled by its full path. An absent path lists the configured `homeDirectory`, or the host account's home directory when unset; an explicit `path` is still browsed as requested. The read-only capability property `homeDirectory` and the listing's `home` use the same provider configuration. An explicit user directory keeps these locations independent of an isolated process `HOME`. One call returns at most `maxEntries` rows (config, default 1,000 — the bound GitHub's web UI applies to directory listings), and a cut level reports `truncated: true` so the client can say the level is incomplete. Symlinks to directories are followed; broken and cyclic links are skipped.
 
 ### Creating a directory
 
@@ -44,6 +44,7 @@ Both primitives refuse a path that is not fully qualified — relative forms, an
 | Field | Default | Meaning |
 |---|---|---|
 | `maxEntries` | `1,000` | Complete-result bound of one listing level; hidden rows count toward it |
+| `homeDirectory` | Host account's home directory | Fully qualified public user directory used for the browse start and read-only installation discovery; registers no Workspace and expands no model permissions |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-host-directory-picker-browse) is the exhaustive source for every accepted field and its JSDoc.
 

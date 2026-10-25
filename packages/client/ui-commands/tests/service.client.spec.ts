@@ -478,6 +478,7 @@ describe('candidates', () => {
       const outcome = menuPick(source, 'plan', proj('s1'))
       if (outcome === undefined || outcome === 'handled' || !('claim' in outcome)) throw new Error('expected the claim')
       expect(outcome.claim.token).toBe('/command:token.plan ')
+      expect(outcome.claim.kind).toBe('host-command')
       await outcome.claim.submit('do x', new Context(), [])
       expect(executeCalls).toEqual([{ sessionId: sid('s1'), line: '/plan do x', images: [] }])
     })

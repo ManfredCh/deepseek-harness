@@ -694,3 +694,38 @@ describe('command attachments', () => {
     })
   })
 })
+
+describe('declared persistent user work retains a Session without a model turn', () => {
+  it('records only the resolved definition after real success; input, failures, and unknown commands cannot mark work', async () => {
+    const ctx = await mount()
+    const { agent, scope } = await mintAgentScope(ctx, 'retained-work')
+    ctx.commands.register({ ...command('save'), retainsSession: true })
+    ctx.commands.register({ ...command('inspect') })
+    ctx.commands.register({ name: 'failed', description: 'Persist but fail', retainsSession: true, handler: () => ({ kind: 'error', text: 'CAS conflict' }) })
+    ctx.commands.register({ name: 'thrown', description: 'Persist but throw', retainsSession: true, handler: () => { throw Error('CAS conflict') } })
+    const signal = new AbortController().signal
+    await ctx.commands.execute(agent, '/save', [], signal)
+    await ctx.commands.execute(agent, '/inspect {"retainsSession":true}', [], signal)
+    await ctx.commands.execute(agent, '/failed', [], signal)
+    await expect(ctx.commands.execute(agent, '/thrown', [], signal)).rejects.toThrow('CAS conflict')
+    expect(await ctx.commands.execute(agent, '/unknown {"retainsSession":true}', [], signal)).toBeUndefined()
+    const done = agent.session.snapshotEvents().filter(event => event.type === 'command/done')
+    expect(done.map(event => event.data.retainsSession)).toEqual([true, undefined, undefined, undefined])
+    expect(done.map(event => event.data.kind)).toEqual(['success', 'success', 'error', 'error'])
+    expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(false)
+    // A scoped replacement without the declaration must not inherit the global mark.
+    scope.ctx.commands.register(command('save', 'scoped inspect'))
+    await ctx.commands.execute(agent, '/save', [], signal)
+    const last = agent.session.snapshotEvents().at(-1)
+    expect(last?.type).toBe('command/done')
+    if (last?.type !== 'command/done') throw Error('missing native command settlement')
+    expect(last.data.retainsSession).toBeUndefined()
+    expect(ctx.commands.list(agent).find(row => row.name === 'save')).not.toHaveProperty('retainsSession')
+    await ctx.fiber.dispose()
+  })
+  it('validates the plugin declaration without creating another command metadata owner', async () => {
+    const ctx = await mount()
+    expect(() => ctx.commands.register({ ...command('invalid'), retainsSession: false } as unknown as CommandDefinition)).toThrow('retainsSession must be true or absent')
+    await ctx.fiber.dispose()
+  })
+})

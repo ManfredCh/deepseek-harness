@@ -25,7 +25,8 @@ import type { ContextPressureProjection } from '@deepseek-ai/dsh-token-meter/cli
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { SubmitOutcome } from '../src/client/contract/input.ts'
+import type { CommandClaim, SubmitOutcome } from '../src/client/contract/input.ts'
+import type { ComposerBlock } from '../src/client/contract/composer-blocks.ts'
 import { SessionInputShell } from '../src/client/input/facade.ts'
 import { $replaceDetectSpanWithText, $selectDetectSpan } from '../src/client/input/editor/span-map.ts'
 import type {
@@ -66,7 +67,7 @@ interface BenchOptions {
   /** The `goal` projection value used only to prove attachment intake remains ordinary. */
   goal?: { phase: 'active'; objective: string }
   modelEntry?: React.ReactNode
-  permissionEntry?: React.ReactNode
+  permissionEntry?: React.ReactNode | ((owner: { locked: boolean }) => React.ReactNode)
   /** Hot text-ref lexicon (injects a minimal slash stub exposing only lexicon()). */
   lexicon?: ReadonlyMap<'/' | '@', readonly string[]>
   /** The `imageLimits` projection value (absent = no attachment service). */
@@ -83,7 +84,7 @@ interface BenchOptions {
   subagent?: Exclude<SessionSnapshot['subagent'], null>
   disabled?: boolean
   inert?: boolean
-  blocked?: { readonly reason: string }
+  blocked?: ComposerBlock
   workspacePickerOpen?: boolean
   onRequestWorkspace?: () => void
   promptError?: SessionSnapshot['promptError']
@@ -170,7 +171,8 @@ function bench(over?: BenchOptions) {
     if (key === 'conversation.input.right') return over?.rightItems ?? null
     if (key === 'conversation.composer.dock') return over?.footer ?? null
     if (key === 'conversation.input.plan') return over?.planEntry ?? null
-    if (key === 'conversation.input.permission') return over?.permissionEntry ?? null
+    if (key === 'conversation.input.permission') return typeof over?.permissionEntry === 'function'
+      ? over.permissionEntry(owner as { locked: boolean }) : over?.permissionEntry ?? null
     if (key === 'conversation.input.model') return over?.modelEntry ?? null
     if (key === 'conversation.input.activity') return over?.activityEntry?.(owner as InputActivityOwnerProps) ?? null
     return null
@@ -1136,6 +1138,191 @@ describe('running and lock semantics', () => {
     fireEvent.click(button)
     expect(stop).toHaveBeenCalledTimes(1)
     expect(sink).not.toHaveBeenCalled()
+  })
+
+  it('缺模型只禁用prompt和plan，原权限座位仍可点击切换', () => {
+    const select = vi.fn()
+    const { view, textarea, sink, slotCalls } = bench({
+      blocked: { reason: '游客模式未配置模型', allowPermissionChanges: true },
+      permissionEntry: owner => <button data-testid="permission-change" disabled={owner.locked} onClick={select}>权限</button>,
+    })
+    expect(editableOf(textarea)).toBe(false)
+    expect(textarea.getAttribute('aria-disabled')).toBe('true')
+    const permission = view.getByTestId('permission-change') as HTMLButtonElement
+    expect(permission.disabled).toBe(false)
+    fireEvent.click(permission)
+    expect(select).toHaveBeenCalledOnce()
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(sink).not.toHaveBeenCalled()
+    expect(slotCalls.findLast(row => row.key === 'conversation.input.plan')?.owner).toMatchObject({ locked: true })
+  })
+
+  it('缺模型时菜单可选原生命令，普通prompt和任意slash仍锁', () => {
+    const toggle = vi.fn()
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model', allowPermissionChanges: true }, toggleCommandMenu: toggle })
+    const menu = b.view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!
+    expect(menu.disabled).toBe(false)
+    fireEvent.click(menu)
+    expect(toggle).toHaveBeenCalledOnce()
+    expect(editableOf(b.textarea)).toBe(false)
+    act(() => { b.shell.setDraft('/unknown do something') })
+    expect(editableOf(b.textarea)).toBe(false)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    fireEvent.click(b.button)
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it.each(['click', 'enter'] as const)('缺模型已登记host-command可编辑参数并通过%s提交，模型sink保持零调用', async gesture => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success', commandResult: { kind: 'success' } }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model', allowPermissionChanges: true } })
+    act(() => {
+      b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev })
+      b.shell.setDraft('/list_mcp_servers local')
+    })
+    expect(b.shell.snapshot.claim?.kind).toBe('host-command')
+    expect(editableOf(b.textarea)).toBe(true)
+    expect(b.button.disabled).toBe(false)
+    if (gesture === 'click') fireEvent.click(b.button)
+    else fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    await vi.waitFor(() => { expect(submit).toHaveBeenCalledExactlyOnceWith('local', SCTX, []) })
+    expect(b.sink).not.toHaveBeenCalled()
+    await vi.waitFor(() => { expect(b.shell.snapshot.phase).toBe('plain') })
+    expect(editableOf(b.textarea)).toBe(false)
+    expect(b.slotCalls.findLast(row => row.key === 'conversation.input.plan')?.owner).toMatchObject({ locked: true })
+    expect(attachmentOwner(b.slotCalls).canAcceptDrop).toBe(false)
+  })
+
+  it('已登记命令名被删坏时立即丢claim并锁回prompt，不按slash前缀放行', () => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success' }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    act(() => { b.shell.setDraft('/list_mcp_servers') })
+    expect(editableOf(b.textarea)).toBe(true)
+    act(() => { b.shell.setDraft('/list_mcp_servers_bad') })
+    expect(b.shell.snapshot.claim).toBeUndefined()
+    expect(editableOf(b.textarea)).toBe(false)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(submit).not.toHaveBeenCalled()
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['没有显式分类的claim', undefined],
+    ['未声明的模型生产claim', 'model-prompt'],
+  ] as const)('%s在缺模型时仍锁编辑和提交', (_name, kind) => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success' }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ ...kind === undefined ? {} : { kind: kind as never }, name: 'skill', token: '/skill ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    expect(editableOf(b.textarea)).toBe(false)
+    fireEvent.click(b.button)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(submit).not.toHaveBeenCalled()
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['未知block', { blocked: { reason: 'other refusal' } }],
+    ['未知分类block', { blocked: { reason: 'other refusal', kind: 'unknown' as never } }],
+    ['permission-only不能冒充model-only', { blocked: { reason: 'same copy', allowPermissionChanges: true } }],
+    ['会话已移除', { disabled: true }],
+    ['工作区未就绪', { inert: true }],
+    ['continuable父离线', { subagent: { address: { parentSessionId: 'parent' as SessionId, childSessionId: SID, mode: 'continuable' as const }, parentAvailable: false } }],
+  ] as const)('%s即使有host-command也保持原门', (_name, options) => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success' }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' }, ...options })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    expect(editableOf(b.textarea)).toBe(false)
+    const menu = b.view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!
+    expect(menu.disabled).toBe(true)
+    fireEvent.click(b.button)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(submit).not.toHaveBeenCalled()
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it.each(['adjudicating', 'submitting'] as const)('host-command在%s时仍只读并禁菜单和提交', phase => {
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit: () => Promise.resolve({ kind: 'success' }) }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    const busy = createSnapshotStore({ ...b.shell.state.getSnapshot(), phase })
+    b.view.rerender(<InputBar {...b.props} useInput={bindSnapshotSelector(busy)} />)
+    expect(editableOf(b.textarea)).toBe(false)
+    expect(b.button.disabled).toBe(true)
+    expect(b.view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.disabled).toBe(true)
+  })
+
+  it('运行中缺模型已有命令可提交，普通草稿仍保留Stop', async () => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success' }))
+    const b = bench({ running: true, blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    const send = b.view.container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')!
+    expect(send.disabled).toBe(false)
+    fireEvent.click(send)
+    await vi.waitFor(() => { expect(submit).toHaveBeenCalledOnce() })
+    expect(b.sink).not.toHaveBeenCalled()
+    await vi.waitFor(() => { expect(b.shell.snapshot.phase).toBe('plain') })
+    expect(b.view.container.querySelector('button[aria-label="停止生成"]')).not.toBeNull()
+  })
+
+  it('命令handler的模型拒绝原样返回，不调用普通模型sink', async () => {
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.reject(new Error('model-unavailable')))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'requires_model', token: '/requires_model ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    fireEvent.click(b.button)
+    await vi.waitFor(() => { expect(b.view.getByText('model-unavailable')).toBeTruthy() })
+    expect(b.shell.snapshot.phase).toBe('claimed')
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it('命令handler仍收到原模型拒绝结果，零普通sink且不改command结果', async () => {
+    const result = { kind: 'error' as const, text: 'native handler requires a model' }
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success', commandResult: result }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'requires_model', token: '/requires_model ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    fireEvent.click(b.button)
+    await vi.waitFor(() => { expect(submit).toHaveBeenCalledOnce() })
+    expect(await submit.mock.results[0]!.value).toEqual({ kind: 'success', commandResult: result })
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it('缺失live machine仍锁菜单和已保留命令参数', () => {
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit: () => Promise.resolve({ kind: 'success' }) }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    b.view.rerender(<InputBar {...b.props} keyboard={undefined} />)
+    expect(editableOf(b.textarea)).toBe(false)
+    expect(b.button.disabled).toBe(true)
+    expect(b.view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!.disabled).toBe(true)
+  })
+
+  it('缺模型命令不扩大附件入站，未声明接受附件的handler仍被原门拒绝', async () => {
+    const file = { kind: 'file' as const, id: 'file-1' as DraftAttachmentId, file: new File(['x'], 'note.txt', { type: 'text/plain' }) }
+    const submit = vi.fn<CommandClaim['submit']>(() => Promise.resolve({ kind: 'success' }))
+    const b = bench({ blocked: { kind: 'model-unavailable', reason: 'no model' }, attachments: [file], fileUploads: { [file.id]: { status: 'ready', receiptId: 'r-1' } as never } })
+    act(() => { b.shell.beginCommand({ kind: 'host-command', name: 'list_mcp_servers', token: '/list_mcp_servers ', submit }, { start: 0, end: 0, draftRev: b.shell.snapshot.draftRev }) })
+    expect(attachmentOwner(b.slotCalls).canAcceptDrop).toBe(false)
+    expect(b.shell.canPickFiles()).toBe(false)
+    fireEvent.click(b.button)
+    await vi.waitFor(() => { expect(b.view.getByText('/list_mcp_servers attachments-unsupported')).toBeTruthy() })
+    expect(submit).not.toHaveBeenCalled()
+    expect(b.sink).not.toHaveBeenCalled()
+    expect(b.shell.snapshot.attachmentIds).toEqual([file.id])
+  })
+
+  it.each([
+    ['未知block', { blocked: { reason: 'other refusal' } }],
+    ['明确不放行权限的block', { blocked: { reason: 'other refusal', allowPermissionChanges: false } }],
+    ['会话已移除', { disabled: true, blocked: { reason: 'no model', allowPermissionChanges: true } }],
+    ['工作区尚未就绪', { inert: true, blocked: { reason: 'no model', allowPermissionChanges: true } }],
+    ['continuable父会话离线', { subagent: { address: { parentSessionId: 'parent' as SessionId, childSessionId: SID, mode: 'continuable' as const }, parentAvailable: false }, blocked: { reason: 'no model', allowPermissionChanges: true } }],
+  ])('%s仍锁原权限座位', (_name, options) => {
+    const { view } = bench({ ...options, permissionEntry: owner => <button data-testid="permission-locked" disabled={owner.locked}>权限</button> })
+    expect((view.getByTestId('permission-locked') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it.each(['adjudicating', 'submitting'] as const)('%s期间原权限座位仍锁定', phase => {
+    const { view, props, shell } = bench({ blocked: { reason: 'no model', allowPermissionChanges: true } })
+    const busy = createSnapshotStore({ ...shell.state.getSnapshot(), phase })
+    view.rerender(<InputBar {...props} useInput={bindSnapshotSelector(busy)} renderSlot={((key: string, owner: { locked: boolean }) => key === 'conversation.input.permission' ? <button data-testid="permission-busy" disabled={owner.locked}>权限</button> : null) as never} />)
+    expect((view.getByTestId('permission-busy') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('running plain Enter follows the busy-state Steer preference', () => {

@@ -26,6 +26,7 @@
  * @module dsh-llm-pi-ai/adapter
  */
 
+import { createHash } from 'node:crypto'
 import type {
   Api,
   AuthContext,
@@ -40,6 +41,7 @@ import type {
 import {
   attributionHeaders,
   contentHasImage,
+  registerLlmContinuation,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
@@ -47,6 +49,7 @@ import {
 import type {
   GenerateOptions,
   ImageAttachmentAccess,
+  LlmFailureDiagnostic,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
@@ -63,6 +66,26 @@ import { requestImageTarget, toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
 import { diagnosticFetch } from './diagnostic-fetch.ts'
+import type { WireContinuation } from './diagnostic-fetch.ts'
+import { sameManagedEndpoint } from './managed-discovery.ts'
+
+interface PendingContinuation {
+  readonly snapshot: PiAiSnapshot
+  readonly provider: string
+  readonly model: string
+  readonly requestInputSha256: string
+  readonly wire: WireContinuation
+  readonly diagnostic: LlmFailureDiagnostic
+  readonly expiresAt: number
+  armed: boolean
+  cleanup: () => void
+}
+
+/** 续接用完后只保留原副作用事实，不能恢复出第三次认领能力。 */
+function withoutContinuation(diagnostic: LlmFailureDiagnostic): LlmFailureDiagnostic {
+  const { continuation: _usedContinuation, ...facts } = diagnostic
+  return facts
+}
 
 /**
  * Initially active declaration added to an Anthropic request whose projected
@@ -233,6 +256,8 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
  */
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
+  // 原 callerSignal 是单个 AgentLoop 请求系列的内存边界；无需新 Session/Graph 状态。
+  private readonly continuations = new WeakMap<AbortSignal, Map<string, PendingContinuation>>()
 
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
@@ -344,8 +369,13 @@ export class PiAiAdapter extends LlmAdapter {
     }
   }
 
-  override prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> {
+  override prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
     const snapshot = this.current()
+    const armed = [...(signal === undefined ? undefined : this.continuations.get(signal))?.values() ?? []].filter(value => value.armed)
+    if (armed.length > 0 && (armed.length !== 1 || armed[0]!.provider !== provider || armed[0]!.model !== model || armed[0]!.snapshot !== snapshot || Date.now() >= armed[0]!.expiresAt)) {
+      throw new LlmError('Central continuation binding changed; reconcile the original request before resubmitting.',
+        'CENTRAL_CONTINUATION_BINDING_INVALID', { diagnostic: withoutContinuation(armed[0]!.diagnostic) })
+    }
     return Promise.resolve({
       model: this.modelInfo(snapshot, provider, model),
       stream: options => this.streamWithSnapshot(options, snapshot),
@@ -360,14 +390,24 @@ export class PiAiAdapter extends LlmAdapter {
     options: GenerateOptions,
     snapshot: PiAiSnapshot,
   ): AsyncIterable<StreamChunk> {
+    const continuationEntries = options.signal === undefined ? undefined : this.continuations.get(options.signal)
+    const armed = [...continuationEntries?.values() ?? []].filter(value => value.armed)
+    // 已认领能力属于原请求，不能先按新输入过滤掉它，再把续接悄悄变成新收费请求。
+    // 没有 armed 能力时，同一取消信号下的不同独立输入仍按原路径执行。
+    const requestInputSha256 = createHash('sha256').update(JSON.stringify({
+      provider: options.provider, model: options.model, messages: options.messages, tools: options.tools,
+      temperature: options.temperature, maxTokens: options.maxTokens, reasoningEffort: options.reasoningEffort,
+      sessionId: options.sessionId, stop: options.stop,
+    })).digest('hex')
+    if (armed.length > 0 && (armed.length !== 1 || armed[0]!.provider !== options.provider
+      || armed[0]!.model !== options.model || armed[0]!.requestInputSha256 !== requestInputSha256 || armed[0]!.snapshot !== snapshot || Date.now() >= armed[0]!.expiresAt)) {
+      throw new LlmError('Central continuation input or binding changed; reconcile the original request before resubmitting.',
+        'CENTRAL_CONTINUATION_BINDING_INVALID', { diagnostic: withoutContinuation(armed[0]!.diagnostic) })
+    }
     if (options.stop !== undefined) {
       throw new LlmError('llm-pi-ai does not support GenerateOptions.stop', 'UNSUPPORTED_OPTION')
     }
-    // One capture per stream call, taken before any await: the profile, the
-    // model descriptor, and the collection all come from the same immutable
-    // snapshot, and the credential freezes with them. A configuration change
-    // mid-request builds a separate snapshot, so this request finishes under
-    // the one it started with and the next call picks up the new one.
+    // 原配置快照、模型与凭据依然在任何网络访问之前绑定。
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
     const updates = conversationUpdates(model)
@@ -381,11 +421,30 @@ export class PiAiAdapter extends LlmAdapter {
       ? { ...options, tools: [ANTHROPIC_TOOL_UPDATE_PLACEHOLDER, ...tools] }
       : options
     this.config.assertModel?.(options.provider, model.baseUrl)
-    const reasoning = resolveReasoningLevel(
-      model,
-      options.reasoningEffort ?? profile.reasoning,
-    )
-    const apiKey = await this.config.resolveApiKey(options.provider, profile)
+    const reasoning = resolveReasoningLevel(model, options.reasoningEffort ?? profile.reasoning)
+    const pending = [...continuationEntries?.values() ?? []].filter(value => value.provider === options.provider && value.model === options.model && value.requestInputSha256 === requestInputSha256)
+    let resume: PendingContinuation | undefined
+    let resumeBindingRejected = false
+    const selectResume = pending.length === 0 ? undefined : (url: string, method: string, headers: Headers, generatedBodySha256: string): WireContinuation => {
+      const armed = pending.filter(value => value.armed)
+      const value = armed.length === 1 ? armed[0] : undefined
+      if (!value || options.signal?.aborted || value.snapshot !== snapshot || Date.now() >= value.expiresAt
+        || value.wire.url !== url || value.wire.method !== method || value.wire.bodySha256 !== generatedBodySha256
+        || value.wire.headers.get('authorization') !== headers.get('authorization')) {
+        resumeBindingRejected = true
+        throw new LlmError('Central continuation binding expired or changed; the original request remains unresolved.',
+          'CENTRAL_CONTINUATION_BINDING_INVALID', { diagnostic: withoutContinuation(pending[0]!.diagnostic) })
+      }
+      resume = value
+      value.cleanup()
+      return value.wire
+    }
+    let apiKey: string | undefined
+    try { apiKey = await this.config.resolveApiKey(options.provider, profile) } catch (error) {
+      if (armed.length > 0) throw new LlmError('Central continuation credentials could not be verified; reconcile the original request before resubmitting.',
+        'CENTRAL_CONTINUATION_BINDING_INVALID', { cause: error, diagnostic: withoutContinuation(armed[0]!.diagnostic) })
+      throw error
+    }
 
     const consumer = new AbortController()
     const upstream = options.signal === undefined
@@ -417,7 +476,10 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade)
-      const diagnostic = diagnosticFetch()
+      const diagnostic = diagnosticFetch({
+        continuation: model.api === 'openai-completions' && sameManagedEndpoint(profile.managedBaseURL, model.baseUrl),
+        ...selectResume === undefined ? {} : { resume: selectResume },
+      })
       const events = snapshot.models.streamSimple(model, context, {
         fetch: diagnostic.fetch,
         ...profileOptions(profile, reasoning, apiKey),
@@ -438,7 +500,63 @@ export class PiAiAdapter extends LlmAdapter {
             exhausted = true
             return
           }
-          yield result.value
+          const chunk = result.value
+          if (!resume && chunk.type === 'finish' && chunk.reason.kind === 'error' && options.signal) {
+            const wire = diagnostic.continuation()
+            const summary = chunk.reason.failure.diagnostic?.continuation
+            if (wire && summary && !options.signal.aborted) {
+              const signal = options.signal
+              const continuationKey = JSON.stringify([options.provider, options.model, summary.requestId, summary.bodySha256])
+              const value: PendingContinuation = {
+                snapshot, provider: options.provider, model: options.model, requestInputSha256, wire,
+                diagnostic: chunk.reason.failure.diagnostic!, expiresAt: Date.now() + 60_000,
+                armed: false, cleanup: () => {},
+              }
+              const cancel = () => {
+                cleanup()
+                // 用户停止只撤销中央现有 lease；沿原 Auth/完整 POST，不发新生成或预留。
+                const headers = new Headers(wire.headers)
+                headers.set('x-lyapunov-resume-control', 'cancel')
+                headers.set('x-lyapunov-resume-request', wire.requestId)
+                headers.set('x-lyapunov-resume-attempt', '1')
+                headers.set('x-lyapunov-resume-token', wire.token)
+                headers.set('x-lyapunov-body-sha256', wire.bodySha256)
+                void fetch(wire.url, { method: wire.method, body: wire.body, headers, signal: AbortSignal.timeout(5_000) })
+                  .then(response => response.body?.cancel()).catch(() => {})
+              }
+              const clearRegistration = registerLlmContinuation(signal, options.provider, summary, () => {
+                if (signal.aborted || this.continuations.get(signal)?.get(continuationKey) !== value || value.armed
+                  || snapshot.profiles !== this.config.profiles() || Date.now() >= value.expiresAt) return false
+                value.armed = true
+                return true
+              }, { adapter: this, model: options.model, diagnostic: chunk.reason.failure.diagnostic! })
+              const cleanup = () => {
+                const entries = this.continuations.get(signal)
+                if (entries?.get(continuationKey) === value) entries.delete(continuationKey)
+                if (entries?.size === 0) this.continuations.delete(signal)
+                clearRegistration()
+                signal.removeEventListener('abort', cancel)
+                clearTimeout(timer)
+              }
+              // 已认领后保留同series绑定，即使许可到期也只能拒绝，不得fallback为fresh请求。
+              const timer = setTimeout(() => { if (!value.armed) cleanup() }, 60_000)
+              timer.unref?.()
+              value.cleanup = cleanup
+              const entries = this.continuations.get(signal) ?? new Map<string, PendingContinuation>()
+              entries.get(continuationKey)?.cleanup()
+              entries.set(continuationKey, value)
+              this.continuations.set(signal, entries)
+              signal.addEventListener('abort', cancel, { once: true })
+            }
+          }
+          // 缺少新的诊断时，已认领请求的后续失败仍保留原 reserved/unknown 门。
+          // 不允许 generic timeout 再建立第三个付费请求。
+          if ((resume || pending.length > 0) && chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')
+            && chunk.reason.failure.diagnostic === undefined) {
+            yield { ...chunk, reason: { ...chunk.reason, failure: { ...chunk.reason.failure,
+              code: resumeBindingRejected ? 'CENTRAL_CONTINUATION_BINDING_INVALID' : chunk.reason.failure.code,
+              diagnostic: withoutContinuation((resume ?? pending[0])!.diagnostic) } } }
+          } else yield chunk
         }
       } finally {
         if (!exhausted) {
@@ -451,11 +569,12 @@ export class PiAiAdapter extends LlmAdapter {
       }
     } catch (error: unknown) {
       if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
-        throw new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
+        throw new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error, ...resume ? { diagnostic: withoutContinuation(resume.diagnostic) } : {} })
       }
       if (options.signal?.aborted) {
         throw new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })
       }
+      if (resume?.diagnostic || pending.length > 0) throw new LlmError('Central continuation failed; reconcile the original request before resubmitting.', 'CENTRAL_CONTINUATION_FAILED', { cause: error, diagnostic: withoutContinuation((resume ?? pending[0])!.diagnostic) })
       throw error
     } finally {
       consumer.abort('pi-ai stream consumer stopped')

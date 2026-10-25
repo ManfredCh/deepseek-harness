@@ -485,7 +485,7 @@ export interface ComposerBarOwnerProps {
   /** Hero uses centered placement; composer uses the active bottom placement. */
   variant: 'hero' | 'composer'
   /** A feature-owned reason that makes message input inert while leaving model selection live. */
-  blocked?: { readonly reason: string }
+  blocked?: ComposerBlock
   /** Lock all message actions while preserving the resident composer surface. */
   disabled?: boolean
   /** Whether the shared Workspace picker is expanded. */

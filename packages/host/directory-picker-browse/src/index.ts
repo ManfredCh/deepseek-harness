@@ -18,7 +18,7 @@ import {
   DirectoryPicker, DirectoryPickerError,
 } from '@deepseek-ai/dsh-host-directory-picker'
 import type {
-  DirectoryEntry, DirectoryListing, DirectoryPickerCapability,
+  DirectoryEntry, DirectoryListing, DirectoryPickerBrowseCapability, DirectoryPickerCapability,
 } from '@deepseek-ai/dsh-host-directory-picker'
 
 /**
@@ -181,6 +181,8 @@ async function directoryRow(
 export interface Config {
   /** Complete-result bound of one listing level; see {@link BrowseDirectoryPicker.Config}. */
   maxEntries: number
+  /** Public chooser start directory, independent of an isolated process HOME. */
+  homeDirectory?: string
 }
 
 /** The `ctx.directoryPicker` browse implementation (stable capability object per service life). */
@@ -194,16 +196,23 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
    */
   static Config: z<Config> = z.object({
     maxEntries: z.natural().min(1).default(1000),
+    homeDirectory: z.string(),
   })
 
-  private readonly browseCapability: DirectoryPickerCapability = {
-    kind: 'browse',
-    list: (path, signal) => this.list(path, signal),
-    createDirectory: (path, name) => this.createDirectory(path, name),
-  }
+  private readonly browseCapability: DirectoryPickerBrowseCapability
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx)
+    if (config.homeDirectory !== undefined && !fullyQualified(config.homeDirectory)) {
+      throw new TypeError('Chooser homeDirectory must be a fully qualified path')
+    }
+    const provider = this
+    this.browseCapability = {
+      kind: 'browse',
+      get homeDirectory() { return provider.config.homeDirectory ?? homedir() },
+      list: (path, signal) => this.list(path, signal),
+      createDirectory: (path, name) => this.createDirectory(path, name),
+    }
   }
 
   /**
@@ -215,7 +224,7 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
   }
 
   private async list(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
-    const home = homedir()
+    const home = this.browseCapability.homeDirectory ?? homedir()
     // The seam contract takes fully qualified paths only; resolve() would
     // silently rebase a relative or empty wire value under the host process
     // cwd (or, for rooted drive-less Windows forms, its current drive).

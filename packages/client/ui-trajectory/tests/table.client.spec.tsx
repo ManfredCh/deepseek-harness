@@ -12,6 +12,9 @@ import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { TrajectoryTable as LocalizedTrajectoryTable } from '../src/client/TrajectoryTable.tsx'
 import { deriveTrajectoryLayout, type TrajectoryTurnModel } from '../src/client/layout.ts'
 import { trajectoryRecordId } from '../src/client/trajectory-record.ts'
+import { ModelDirectory } from '../../ui-model-selection/src/client/directory.ts'
+import { ModelCatalogDirectory } from '../../ui-model-selection/src/client/catalog.ts'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { t, tZh } from './locale.client.ts'
 
 const loadImage: MessageImageLoader = async () => 'blob:trajectory'
@@ -1329,4 +1332,27 @@ describe('TrajectoryTable', () => {
     expect(screen.getByRole('row', { name: /TOOL/ }).getAttribute('aria-selected')).toBe('false')
     expect(onInspectApplied).not.toHaveBeenCalled()
   })
+})
+
+
+it('request inspector uses each session directory public names and localized unknown fallback without changing facts', () => {
+  const make = (id: string, name: string) => {
+    const catalog = new ModelCatalogDirectory({ remote: { session: {} } } as never)
+    catalog.store.set({ status: 'ready', error: null, value: { default: null, groups: [{ id: 'raw-provider', name: 'Public gateway', models: [{ id, name }] }], routableProviders: ['raw-provider'], failures: [] } })
+    return new ModelDirectory({} as never, SessionId(id), () => true, catalog, createSnapshotStore(undefined), () => true)
+  }
+  const first = make('peiri', 'Peiri'), second = make('other-id', 'Second public name')
+  const turns: readonly TrajectoryTurnModel[] = [{ turn: 1, groups: [{ title: 'Step 1', cells: [{ index: 1, sourceSeq: 1, kind: 'message', text: 'response', timeSeconds: 1 }] }] }]
+  const numbers = [{ turn: 1, step: 1, seq: 1, group: 'Step 1', number: 1, provider: 'raw-provider', model: 'peiri', requestConfig: { provider: 'raw-provider', model: 'peiri' } }]
+  const original = JSON.stringify(numbers)
+  const view = render(<LocalizedTrajectoryTable t={t} renderImages={renderImagesStub} turns={turns} requestNumbers={numbers} modelDirectory={first} {...FOLD_PROPS} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Request #1' }))
+  expect(screen.getByText('Peiri')).toBeTruthy();expect(screen.getByText('Public gateway')).toBeTruthy()
+  view.rerender(<LocalizedTrajectoryTable t={t} renderImages={renderImagesStub} turns={turns} requestNumbers={[{ ...numbers[0]!, model: 'other-id' }]} modelDirectory={second} {...FOLD_PROPS} />)
+  expect(screen.getByText('Second public name')).toBeTruthy();expect(screen.queryByText('Peiri')).toBeNull()
+  act(() => { second.store.update(state => { state.groups = [] }) })
+  expect(view.container.textContent).not.toContain('raw-provider');expect(view.container.textContent).not.toContain('other-id')
+  view.rerender(<LocalizedTrajectoryTable turns={turns} requestNumbers={numbers} modelDirectory={second} t={tZh} renderImages={renderImagesStub} {...FOLD_PROPS} />)
+  expect(view.container.textContent).toContain('模型');expect(JSON.stringify(numbers)).toBe(original)
+  first.dispose();second.dispose()
 })

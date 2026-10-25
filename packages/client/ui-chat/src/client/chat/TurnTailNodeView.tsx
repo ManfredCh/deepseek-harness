@@ -26,7 +26,7 @@ function lastContent(snapshot: ChatSnapshot, turn: number, skipWarning: boolean)
 
 /** Turn-local actions and feature tail over the Location index, independent of Assistant placement. */
 export const TurnTailNodeView = memo(function TurnTailNodeView({
-  node, openFile, forkAt, renderSlot, t, useAccess, useChat, usePerformanceUsage,
+  node, openFile, forkAt, renderSlot, t, useAccess, useChat, usePerformanceUsage, modelDirectory,
 }: TurnTailNodeViewProps) {
   const detailed = usePerformanceUsage(mode => mode) === 'detailed'
   const forkAllowed = useAccess('session/fork')
@@ -72,7 +72,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
         className={css.actions}
         extraActions={assistantActions}
         usageAction={detailed && data.tokenUsage !== undefined
-          ? <TurnUsagePanel usage={data.tokenUsage} t={t} />
+          ? <TurnUsagePanel usage={data.tokenUsage} t={t} modelDirectory={modelDirectory} />
           : null}
         t={t}
       />

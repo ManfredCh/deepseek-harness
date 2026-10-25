@@ -14,6 +14,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import SessionStore from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { CommandId } from '@deepseek-ai/dsh-commands/brand'
+import Commands from '@deepseek-ai/dsh-commands'
+import { applySessionListMetadata } from '../src/list.ts'
 // Side-effect type imports: the configuration-event SessionEventMap merges.
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
@@ -70,5 +72,37 @@ describe('summary blank = conversation not started', () => {
     appendStandalone(session)
     session.append('turn/start', { turn: 0 })
     expect(await listBlank(remote, session.id)).toBe(false)
+  })
+})
+
+
+describe('declared successful persistent user work is not a provisional Session', () => {
+  it('uses the native command producer and current projection without adding a turn or prompt time', async () => {
+    const { ctx, remote, attach } = await harness()
+    await ctx.plugin(Commands)
+    const session = ctx.sessions.create(), agent = { id: session.id, session, status: 'idle', ctx } as Agent
+    await attach(session)
+    ctx.commands.register({ name: 'save', description: 'Persist user work', retainsSession: true, handler: () => ({ kind: 'success', text: 'Saved' }) })
+    expect(await listBlank(remote, session.id)).toBe(true)
+    const execution = await ctx.commands.execute(agent, '/save', [], new AbortController().signal)
+    expect(execution?.result.kind).toBe('success')
+    expect(await listBlank(remote, session.id)).toBe(false)
+    const events = session.snapshotEvents()
+    expect(events.some(event => event.type === 'turn/start' || event.type === 'user/message')).toBe(false)
+    const persisted = JSON.parse(JSON.stringify(events)) as typeof events
+    const folded = persisted.reduce(applySessionListMetadata, { blank: true, lastPromptAt: null })
+    expect(folded).toEqual({ blank: false, lastPromptAt: null })
+    await ctx.fiber.dispose()
+  })
+  it('old unmarked configuration history remains blank and a failed marked outcome cannot retain it', async () => {
+    const { ctx, remote, attach } = await harness()
+    const session = ctx.sessions.create()
+    await attach(session)
+    appendStandalone(session)
+    session.append('command/done', { commandId: CommandId('invalid-success-marker'), kind: 'error', retainsSession: true, text: 'Failed' })
+    expect(await listBlank(remote, session.id)).toBe(true)
+    const state = session.snapshotEvents().reduce(applySessionListMetadata, { blank: true, lastPromptAt: null })
+    expect(state).toEqual({ blank: true, lastPromptAt: null })
+    await ctx.fiber.dispose()
   })
 })

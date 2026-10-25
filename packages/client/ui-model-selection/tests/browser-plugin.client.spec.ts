@@ -18,6 +18,7 @@ import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
 import type { ModelSelection, ModelSelectionProjection } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { CommandContribution, PopupSelectSpec, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ModelSelectInjected } from '../src/client/slots.ts'
+import type { ComposerBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { apply, inject } from '../src/client/index.ts'
 import { zh, en } from '../src/client/locales.ts'
 
@@ -107,10 +108,10 @@ async function bench(locale: 'zh' | 'en' = 'zh', presentation: { manualOnly?: bo
   }
   const remote = Object.assign(new TestRemote(ctx), { session: sessionRemote })
   ctx.reflect.provide('remote.session', sessionRemote)
-  const blocks = new Map<SessionId, { reason: string } | undefined>()
+  const blocks = new Map<SessionId, ComposerBlock | undefined>()
   ctx.provide('conversation', {
     blocks: {
-      set: (id: SessionId, block: { reason: string } | undefined) => { blocks.set(id, block) },
+      set: (id: SessionId, block: ComposerBlock | undefined) => { blocks.set(id, block) },
     },
   })
   let contribution: CommandContribution | undefined
@@ -569,6 +570,8 @@ it.each(['zh', 'en'] as const)('uses the native resolver locale for an explicit 
     await vi.waitFor(() => {
       expect(face.directory.getSnapshot()).toMatchObject({ current: null, routable: false, manualOnlyPresentation: 'guest', status: 'ready' })
       expect(b.blockOf('guest')?.reason).toBe((locale === 'zh' ? zh : en)['blocked.guest'])
+      expect(b.blockOf('guest')?.allowPermissionChanges).toBe(true)
+      expect(b.blockOf('guest')?.kind).toBe('model-unavailable')
     })
     expect(b.calls.select).toBe(0)
   } finally { await b.ctx.fiber.dispose() }

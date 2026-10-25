@@ -91,7 +91,7 @@ export class ModelDirectoryResolver extends Service {
       const publish = (): void => {
         const state = directory.store.getSnapshot()
         conversation.blocks.set(sessionId, state.current === null && state.routable === false
-          ? { reason: config.blockReason(state) } : undefined)
+          ? { reason: config.blockReason(state), kind: 'model-unavailable', allowPermissionChanges: true } : undefined)
       }
       scope.effect(() => {
         const offDirectory = directory.store.subscribe(publish)

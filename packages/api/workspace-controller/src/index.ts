@@ -35,6 +35,8 @@ export { DirectoryPickerController } from './directory-picker.ts'
 
 /** First-use directory policy for the Host account. */
 export interface Config {
+  /** Whether first-use startup may create a default project without a picker selection. */
+  autoInitializeDefault?: boolean
   /** Override the system Documents directory with a fully qualified path. */
   documentsDirectory?: string
   /** Maximum duration of the operating system's Documents lookup. */
@@ -42,7 +44,7 @@ export interface Config {
 }
 
 /** Directory policy after schema defaults have been applied. */
-type ResolvedConfig = Config & { documentsLookupTimeoutMs: number }
+type ResolvedConfig = Config & { documentsLookupTimeoutMs: number; autoInitializeDefault: boolean }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -57,6 +59,7 @@ export class WorkspaceController extends TypertRemoteService {
 
   static Config: z<Config, ResolvedConfig> = z.object({
     documentsDirectory: z.string(),
+    autoInitializeDefault: z.boolean().default(true),
     documentsLookupTimeoutMs: z.natural().min(1).default(10_000),
   })
 
@@ -102,6 +105,7 @@ export class WorkspaceController extends TypertRemoteService {
    */
   @Remote('initializeDefault')
   async initializeDefault(signal: AbortSignal): Promise<WorkspaceValue | undefined> {
+    if (!this.config.autoInitializeDefault) return undefined
     const workspace = await this.ctx.workspaceRegistry.initializeDefault(async () => {
       const timeout = AbortSignal.timeout(this.config.documentsLookupTimeoutMs)
       return await defaultWorkspaceDirectory(

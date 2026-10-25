@@ -1,5 +1,6 @@
 /** Trajectory view: compact summary over a turn-aware event ledger. */
 
+import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AssistantBlock, AssistantMessageNode, ConvViewProps, MessageImageLoader,
@@ -75,6 +76,8 @@ function partialStructureSignature(partial: TrajectorySnapshot['partial']): stri
 
 /** Session-bound controls not already supplied by the conversation view slot. */
 export interface TrajectoryViewInjected {
+  /** Optional existing session model directory for public request labels. */
+  modelDirectory?: ModelDirectory | undefined
   /** Shared wrapping preference read by expansion handlers. */
   jsonStringWrapping?: Omit<NonNullable<JsonTreeProps['stringWrapping']>, 'label'>
   hooks: {
@@ -131,7 +134,7 @@ function addUsage(
 
 export function TrajectoryView({
   useSession, useTrajectory, useDuration, loadOlder, loadImage, setActualDuration,
-  viewRequest, completeViewRequest, renderSlot, t, jsonStringWrapping,
+  viewRequest, completeViewRequest, renderSlot, t, jsonStringWrapping, modelDirectory,
 }: ConvViewProps
   & Pick<PropsRenderSlots<'conversation.trajectory.images'>, 'renderSlot'>
   & InjectFace<TrajectoryViewInjected>
@@ -545,6 +548,7 @@ export function TrajectoryView({
       />
       <div className={css.ledger}>
         <TrajectoryTable
+          modelDirectory={modelDirectory}
           t={t}
           stringWrapping={jsonStringWrapping === undefined ? undefined : {
             ...jsonStringWrapping,

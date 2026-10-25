@@ -1,5 +1,7 @@
 /** Completed-Turn token usage action and its accounting details dialog. */
 
+import { useSyncExternalStore } from 'react'
+import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { createPortal } from 'react-dom'
 import { IconDatabaseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TurnTokenUsage } from '../contract/chat-nodes.ts'
@@ -9,7 +11,12 @@ import { MEASURE_STYLE, useStatDialog } from './stat-dialog.ts'
 import css from './TurnUsagePanel.module.css'
 import dialogCss from './stat-dialog.module.css'
 
+const EMPTY_MODEL_GROUPS = [] as const
+const emptySubscribe = () => () => {}
+
 export interface TurnUsagePanelProps {
+  /** Existing session directory; absent compositions show generic model labels. */
+  modelDirectory?: ModelDirectory | undefined
   usage: TurnTokenUsage
   /** The owning view's locale seat, passed down as a plain prop. */
   t: ChatViewSlotProps['t']
@@ -28,14 +35,16 @@ function formatExactCount(value: number, t: ChatViewSlotProps['t']): string {
  * @param props - Turn usage buckets and locale seat.
  * @returns The trigger and, while open, its portaled dialog anchored above the trigger.
  */
-export function TurnUsagePanel({ usage, t }: TurnUsagePanelProps) {
+export function TurnUsagePanel({ usage, t, modelDirectory }: TurnUsagePanelProps) {
+  useSyncExternalStore(modelDirectory?.store.subscribe ?? emptySubscribe,
+    () => modelDirectory?.store.getSnapshot().groups ?? EMPTY_MODEL_GROUPS)
   const { open, setOpen, rootRef, panelRef, pos } = useStatDialog()
 
   const cacheHit = usage.cacheReadTokens === undefined
     ? null
     : formatCacheHitPercent(usage.cacheReadTokens, usage.totalTokens - usage.outputTokens, 1)
   const total = formatCompactCount(usage.totalTokens, t)
-  const routes = usage.routes?.map(route => `${route.provider}/${route.model}`).join(', ') ?? ''
+  const routes = usage.routes?.map(route => modelDirectory?.displayNames(route, t('message.modelNameFallback')).model ?? t('message.modelNameFallback')).join(', ') ?? ''
 
   return (
     <span ref={rootRef} className={css.root}>

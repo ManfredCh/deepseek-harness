@@ -76,6 +76,8 @@ export interface CommandDefinition {
    * that payload in the session log.
    */
   readonly recordInput?: boolean
+  /** A successful, persisted user-work result makes this Session non-provisional; grants no execution authority. */
+  readonly retainsSession?: true
   /** Execute against the receiving agent without sending the command to the model. */
   readonly handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult>
 }
@@ -192,6 +194,9 @@ function normalizeDefinition(definition: CommandDefinition): RegisteredCommand {
   if (typeof definition.handler !== 'function') {
     throw new TypeError(`command "${definition.name}" handler must be a function`)
   }
+  if (definition.retainsSession !== undefined && definition.retainsSession !== true) {
+    throw new TypeError(`command "${definition.name}" retainsSession must be true or absent`)
+  }
   const rawInput: unknown = definition.input
   let input: CommandInputDescriptor | undefined
   if (rawInput !== undefined) {
@@ -216,6 +221,7 @@ function normalizeDefinition(definition: CommandDefinition): RegisteredCommand {
     description: definition.description,
     ...input === undefined ? {} : { input },
     ...definition.recordInput === undefined ? {} : { recordInput: definition.recordInput },
+    ...definition.retainsSession === true ? { retainsSession: true as const } : {},
     handler: definition.handler,
   })
   const descriptor = Object.freeze({
@@ -389,6 +395,7 @@ export class CommandRuntime extends TypertRemoteService {
     const settle = (result: CommandResult): CommandExecution => {
       this.appendLifecycle(agent.session, 'command/done', {
         commandId, kind: result.kind,
+        ...result.kind === 'success' && command.definition.retainsSession === true ? { retainsSession: true as const } : {},
         ...presentation?{display:presentation}:{},
         ...result.text === undefined ? {} : { text: result.text },
         ...result.kind === 'success' && result.sourceEventSeq !== undefined

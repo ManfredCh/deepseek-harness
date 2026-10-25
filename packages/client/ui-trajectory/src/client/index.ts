@@ -2,6 +2,7 @@
  * Browser trajectory plugin contributing one entry to the conversation view
  * slot without defining a service.
  */
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -91,6 +92,7 @@ export function apply(ctx: Context): void {
       const trajectory = ctx.uiConversation.binding(sessionId).target('trajectory')
       return {
         hooks: { duration },
+        modelDirectory: ctx.get('modelDirectories')?.directoryFor(sessionId),
         jsonStringWrapping: {
           getDefault: () => stringWrapping.getSnapshot(),
           setDefault: (value) => { stringWrapping.set(value) },

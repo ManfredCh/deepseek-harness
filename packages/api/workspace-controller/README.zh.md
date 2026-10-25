@@ -35,10 +35,13 @@ Client 入口提供 `ClientWorkspaceModel` 和 `createWorkspaceStateStream()`。
 
 [Workspace 注册表](../../workspace/workspace/README.zh.md#first-use-workspace)负责资格判断、目录创建和持久化初始化。已有默认工作区直接返回，不再查询 Documents，也不会被重命名或迁移。不满足首次使用条件时返回 `undefined`，启动流程可将目录选择留给用户。查询和创建失败遵循标准 Remote 错误处理。初始化不创建 Session，也不发送消息。
 
+配置 `autoInitializeDefault: false` 时，该启动操作直接返回 `undefined`，不查询目录、不创建或登记默认工程，用户可通过已有选择器明确选择目录。它不删除或迁移已登记工作区；显式创建、最近工作区恢复和多工作区导航仍由原有注册表与客户端负责。
+
 `./default-workspace` 为浏览器消费方导出 `DEFAULT_WORKSPACE_DIRECTORY` 与 `workspaceDisplayTitle(title, localizedDefault)`：仍保留自动标题的工作区按读者语言显示默认名称，其他标题一律原样显示。被用户重命名为 `default-workspace` 的工作区，或从选择器采用的同名文件夹，也会按默认工作区显示；除显示之外没有其他行为依赖该判断。
 
 | 配置 | 默认值 | 用途 |
 | --- | --- | --- |
+| `autoInitializeDefault` | `true` | 是否允许首次启动自动创建默认工程；关闭后等待用户明确选择目录 |
 | `documentsDirectory` | 系统 Documents 目录 | 完全限定的 Host 目录覆盖值 |
 | `documentsLookupTimeoutMs` | `10000` | 操作系统目录查询的正数最大时长，单位为毫秒 |
 

@@ -49,6 +49,8 @@ export interface ConversationCommandSettled {
 
 /** Command-mode credential supplied by one input-trigger source. */
 export interface CommandClaim {
+  /** Only the effective Host catalog creates this native command route; absent claims retain the prompt gate. */
+  readonly kind?: 'host-command'
   /** Catalog command name without the leading slash (the key of per-command composer copy such as `hint.*`). */
   readonly name: string
   /** Command spelling followed by its argument separator; the composer shows the spelling as a chip and inserts the separator after it. */
@@ -315,7 +317,7 @@ export interface InputState {
   readonly draftRev: number
   readonly phase: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
   /** Present exactly while claimed/submitting (claim snapshot during flight; submit closure withheld). */
-  readonly claim?: { readonly name: string; readonly token: string; readonly hint?: string; readonly attachments?: boolean }
+  readonly claim?: Pick<CommandClaim, 'kind' | 'name' | 'token' | 'hint' | 'attachments'>
   /** Reference occurrence view of the editor's chips, sorted by offset. */
   readonly occurrences: readonly Occurrence[]
   /** Messages still waiting for their own turn. */

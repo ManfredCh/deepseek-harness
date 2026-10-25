@@ -36,12 +36,39 @@ export interface ModelDirectoryState {
   error: string | null
 }
 
+/** Public catalog names for one route; missing identities use caller-localized copy. */
+export interface ModelDisplayNames { provider: string; model: string }
+
+/**
+ * Resolve presentation without exposing stored provider or model identifiers.
+ * @param groups - current groups from the existing model directory.
+ * @param identity - historical or current route identity.
+ * @param fallback - the consumer's localized generic Model label.
+ * @returns registered presentation names, or generic labels when no model matches.
+ */
+export function modelDisplayNames(groups: readonly ModelProviderGroup[], identity: { provider?: string | undefined; model?: string | undefined }, fallback: string): ModelDisplayNames {
+  const group = groups.find(group => group.id === identity.provider)
+  const model = group?.models.find(model => model.id === identity.model)
+  return model === undefined ? { provider: fallback, model: fallback }
+    : { provider: group?.name || fallback, model: model.name || fallback }
+}
+
 /** One session's shared directory controller; disposed with the session scope. */
 export class ModelDirectory {
   /** The shared snapshot both entries render from (uSES-safe store). */
   readonly store: SnapshotStore<ModelDirectoryState> = createSnapshotStore<ModelDirectoryState>({
     current: null, routable: null, groups: [], failures: [], status: 'idle', pending: null, error: null,
   })
+
+  /**
+   * Read public labels from this directory's current catalog without changing selection.
+   * @param identity - route whose labels are being shown.
+   * @param fallback - consumer-localized generic Model label.
+   * @returns registered names, or generic names for an unavailable route.
+   */
+  displayNames(identity: { provider?: string | undefined; model?: string | undefined }, fallback: string): ModelDisplayNames {
+    return modelDisplayNames(this.store.getSnapshot().groups, identity, fallback)
+  }
 
   /** Latest selection operation wins; an older response never overwrites a newer one. */
   private generation = 0

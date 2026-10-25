@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { TurnUsagePanel } from '../src/client/chat/TurnUsagePanel.tsx'
 import type { TurnTokenUsage } from '../src/client/contract/chat-nodes.ts'
-import { en } from '../src/client/locale.ts'
+import { en, zh } from '../src/client/locale.ts'
+import { ModelDirectory } from '../../ui-model-selection/src/client/directory.ts'
+import { ModelCatalogDirectory } from '../../ui-model-selection/src/client/catalog.ts'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 const t = makeTranslate(en, commonEn)
 
@@ -41,7 +45,7 @@ describe('TurnUsagePanel', () => {
     expect(dialog.firstChild?.textContent).toBe('Turn usage15,800 tok')
     const details = dialog.querySelector('[data-turn-usage-details]') as HTMLElement
     expect(details).toBeTruthy()
-    expect(details.textContent).toContain('Provider / modeldeepseek/deepseek-chat')
+    expect(details.textContent).toContain('Provider / modelModel')
     expect(details.textContent).toContain('Cache hit49.4%')
     expect(details.textContent).toContain('Uncached input5,060 tok')
     expect(details.textContent).toContain('Cached input4,940 tok')
@@ -104,4 +108,26 @@ describe('TurnUsagePanel', () => {
     fireEvent.click(document.body)
     expect(view.queryByRole('dialog')).toBeNull()
   })
+})
+
+
+it('two real directory instances show their own public usage names; missing catalog/locales preserve route and exact numbers', () => {
+  const make = (id: string, name: string) => {
+    const catalog = new ModelCatalogDirectory({ remote: { session: {} } } as never)
+    catalog.store.set({ status: 'ready', error: null, value: { default: null, groups: [{ id: 'internal-provider', name: 'Public provider', models: [{ id, name }] }], routableProviders: ['internal-provider'], failures: [] } })
+    return new ModelDirectory({} as never, SessionId('session-'+id), () => true, catalog, createSnapshotStore(undefined), () => true)
+  }
+  const first = make('peiri', 'Peiri'), second = make('other-private-model', 'Public second model')
+  const usage: TurnTokenUsage = { uncachedInputTokens: 123, outputTokens: 45, totalTokens: 168, routes: [{ provider: 'internal-provider', model: 'peiri' }] }
+  const original = JSON.stringify(usage)
+  const view = render(<TurnUsagePanel usage={usage} t={t} modelDirectory={first} />)
+  fireEvent.click(view.getByRole('button'));expect(view.getByRole('dialog').textContent).toContain('Peiri');expect(view.getByRole('dialog').textContent).toContain('123 tok')
+  const otherUsage = { ...usage, routes: [{ provider: 'internal-provider', model: 'other-private-model' }] }
+  view.rerender(<TurnUsagePanel usage={otherUsage} t={t} modelDirectory={second} />)
+  expect(view.getByRole('dialog').textContent).toContain('Public second model');expect(view.getByRole('dialog').textContent).not.toContain('Peiri')
+  act(() => { second.store.update(snapshot => { snapshot.groups = [] }) })
+  expect(view.getByRole('dialog').textContent).not.toContain('other-private-model');expect(view.getByRole('dialog').textContent).toContain('Model')
+  view.rerender(<TurnUsagePanel usage={otherUsage} t={makeTranslate(zh)} modelDirectory={second} />)
+  expect(view.getByRole('dialog').textContent).toContain('模型');expect(JSON.stringify(usage)).toBe(original)
+  first.dispose();second.dispose()
 })

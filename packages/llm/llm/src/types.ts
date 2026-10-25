@@ -37,6 +37,14 @@ export type {
   UserMessage,
 } from './message.ts'
 
+/** 中央单次续接的公开身份摘要；不包含可认领凭证。 */
+export interface LlmContinuationSummary {
+  readonly version: 1
+  readonly requestId: string
+  readonly attempt: 1
+  readonly bodySha256: string
+}
+
 /** 中央公开失败事实；未知结果不得被通用TIMEOUT重试覆盖。 */
 export interface LlmFailureDiagnostic {
   readonly version: 1
@@ -47,6 +55,8 @@ export interface LlmFailureDiagnostic {
   readonly retryable: boolean
   readonly effect: 'none' | 'released' | 'reserved' | 'charged' | 'unknown'
   readonly requestId: string | null
+  /** 仅完整协议身份；原 transport 另持有内存认领能力时才允许续接。 */
+  readonly continuation?: LlmContinuationSummary
 }
 
 /** Serializable provider or transport failure facts; policy decides whether they are retryable. */

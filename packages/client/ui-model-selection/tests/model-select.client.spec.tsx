@@ -215,7 +215,7 @@ describe('ModelSelect reasoning effort', () => {
       .toEqual(['Default', 'Standard'])
   })
 
-  it('opens model choices without exposing a saved route absent from the catalog', () => {
+  it('shows a safe model caption while preserving a durable id absent from the catalog', () => {
     const directory = createSnapshotStore(state({
       current: { provider: 'deepseek-official', model: 'removed-model' },
     }))
@@ -229,8 +229,8 @@ describe('ModelSelect reasoning effort', () => {
       t={t}
     />)
 
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
-    expect(trigger.textContent).toBe('请选择模型')
+    const trigger = screen.getByRole('button', { name: '选择模型，当前 模型' })
+    expect(trigger.textContent).toContain('模型')
     fireEvent.click(trigger)
     expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /模型/ })).toBeNull()
@@ -251,8 +251,8 @@ describe('ModelSelect reasoning effort', () => {
       snapshot.groups = removed === 'provider' ? [] : snapshot.groups.map(group => ({ ...group, models: [] }))
       snapshot.routable = false
     }) })
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
-    expect(trigger.textContent).toBe('请选择模型')
+    const trigger = screen.getByRole('button', { name: /选择模型，当前/ })
+    expect(trigger.textContent).toBe('模型High')
     expect(directory.getSnapshot().current).toEqual(state().current)
     fireEvent.click(trigger)
     expect(screen.getByRole('status').textContent).toBe(zh['empty.models'])
@@ -985,8 +985,25 @@ it('restores the account model name after login without changing the saved route
   render(<ModelSelect renderSlot={renderLabel} locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   act(() => { directory.update((snapshot) => { snapshot.groups = []; snapshot.routable = false }) })
-  expect(screen.getByRole('button', { name: '请选择模型' }).textContent).toBe('请选择模型')
+  expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('模型High')
   act(() => { directory.update((snapshot) => { snapshot.groups = groups; snapshot.routable = true }) })
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   expect(directory.getSnapshot().current).toEqual(selected)
+})
+
+
+it('registered public model captions stay distinct across two session sources; missing catalog is localized without raw ids', () => {
+  const groups = [{ id: 'lyapunov-plans', name: 'Peiri', models: [{ id: 'peiri', name: 'Peiri' }] }]
+  const first = createSnapshotStore(state({ current: { provider: 'lyapunov-plans', model: 'peiri' }, groups }))
+  const second = createSnapshotStore(state({ current: { provider: 'private-provider', model: 'private-model' }, groups: [{ id: 'private-provider', name: 'Public gateway', models: [{ id: 'private-model', name: 'Public second model' }] }] }))
+  const view = render(<div><ModelSelect locked={false} available directory={first} load={vi.fn()} select={vi.fn()} t={t} /><ModelSelect locked={false} available directory={second} load={vi.fn()} select={vi.fn()} t={t} /></div>)
+  expect(view.getByRole('button', { name: '选择模型，当前 Peiri' })).toBeTruthy()
+  expect(view.getByRole('button', { name: '选择模型，当前 Public second model' })).toBeTruthy()
+  act(() => { first.update(snapshot => { snapshot.groups = [] }) })
+  expect(view.getByRole('button', { name: '选择模型，当前 模型' })).toBeTruthy()
+  expect(view.container.textContent).not.toContain('peiri');expect(view.container.textContent).not.toContain('private-provider')
+  const english = (key: string) => (en as Record<string,string>)[key] ?? key
+  view.rerender(<ModelSelect locked={false} available directory={first} load={vi.fn()} select={vi.fn()} t={english} />)
+  expect(view.getByRole('button').textContent).toBe('Model')
+  expect(first.getSnapshot().current).toEqual({ provider: 'lyapunov-plans', model: 'peiri' })
 })

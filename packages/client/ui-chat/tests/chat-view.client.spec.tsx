@@ -735,6 +735,25 @@ describe('Chat node rendering', () => {
 })
 
 describe('ChatView', () => {
+  it.each(['TIMEOUT', 'TRANSPORT', 'CENTRAL_DIAGNOSTIC_INVALID', 'model_reconciliation_required'])('switches %s help through Chinese, English and Chinese in the real failure DOM', code => {
+    const h = makeHarness({ nodes: [user(1, 'try'), { ...turnError(2, code), message: 'PRIVATE_BACKEND_MESSAGE' }] })
+    const view = render(<h.ChatView {...h.props} />)
+    const node = view.container.querySelector('[role="status"]')!
+    expect(node.textContent).toContain('请保留本会话记录')
+    expect(node.textContent).toContain('voryneltech@gmail.com')
+    expect(view.container.textContent).not.toContain('PRIVATE_BACKEND_MESSAGE')
+    h.props.t = makeTranslate(en, commonEn)
+    view.rerender(<h.ChatView {...h.props} />)
+    expect(view.container.textContent).toContain('Keep this conversation record')
+    expect(view.container.textContent).toContain('voryneltech@gmail.com')
+    expect(view.container.textContent).not.toContain('请保留本会话记录')
+    h.props.t = makeTranslate(zh, commonZh)
+    view.rerender(<h.ChatView {...h.props} />)
+    expect(view.container.textContent).toContain('请保留本会话记录')
+    expect(view.container.textContent).not.toContain('Keep this conversation record')
+    expect(view.container.querySelector('[role="status"]')).toBe(node)
+  })
+
   it('renders only referenced Nodes without deleting unreferenced Node data', () => {
     const snapshot = chatSnapshotFixture({ nodes: [user(1, 'included'), user(2, 'omitted')] })
     const h = makeHarness({}, {}, snapshot)

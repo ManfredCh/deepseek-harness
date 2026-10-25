@@ -35,10 +35,13 @@ The Client entry provides `ClientWorkspaceModel` and `createWorkspaceStateStream
 
 The [Workspace registry](../../workspace/workspace/README.md#first-use-workspace) owns eligibility, directory creation, and durable initialization. An existing default Workspace is returned without another Documents lookup and is never renamed or relocated. Ineligible first use returns `undefined`, so startup can leave directory selection to the user. Lookup and creation failures use standard Remote error handling. Initialization creates no Session and sends no message.
 
+Setting `autoInitializeDefault: false` in a product composition makes this startup operation return `undefined` without looking up a directory, creating a project, or registering a default Workspace; users select a directory through the existing picker. It does not delete or move existing Workspace registrations. Explicit creation, recent Workspace restoration, and multi-Workspace navigation remain owned by the registry and Client, with their existing file-access and approval policies unchanged.
+
 `DEFAULT_WORKSPACE_DIRECTORY` and `workspaceDisplayTitle(title, localizedDefault)` are published from `./default-workspace` for browser consumers: a Workspace still carrying the automatic title reads as the reader's localized default name, and every other title reads verbatim. A Workspace the user renamed to exactly `default-workspace` — or a folder of that name adopted from the picker — is labeled as the default; nothing else depends on the distinction.
 
 | Configuration | Default | Purpose |
 | --- | --- | --- |
+| `autoInitializeDefault` | `true` | Whether first-use startup may create a default project automatically; disabling it waits for an explicit directory selection |
 | `documentsDirectory` | System Documents directory | Fully qualified Host directory override |
 | `documentsLookupTimeoutMs` | `10000` | Positive maximum duration of OS directory lookup, in milliseconds |
 

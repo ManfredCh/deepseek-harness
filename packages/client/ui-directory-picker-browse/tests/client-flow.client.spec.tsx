@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { Context } from '@deepseek-ai/cordis'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import type BrowseDirectoryPickerClass from '../../../host/directory-picker-browse/lib/types/index.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -20,6 +25,10 @@ afterEach(cleanup)
 const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow', 'sidebar.right.tab.files.directoryFlow'] as const
 
 const HOME = '/home/u'
+
+// This cross-face fixture consumes the Host build's public runtime and declarations.
+const { default: BrowseDirectoryPicker }: { default: typeof BrowseDirectoryPickerClass }
+  = createRequire(import.meta.url)('@deepseek-ai/dsh-host-directory-picker-browse')
 const homeListing: DirectoryListing = {
   path: HOME,
   home: HOME,
@@ -52,6 +61,44 @@ function owner(overrides: Partial<DirectoryFlowOwnerProps> = {}): DirectoryFlowO
 }
 
 describe('directory-picker-browse client half', () => {
+  it('真实browse用户目录进入原DOM流程，取消不采用目录，正常选择只提交明确的子工程', async () => {
+    const box = await mkdtemp(join(tmpdir(), 'dsh-picker-public-home-dom-'))
+    const ctx = new Context(), home = join(box, 'user-home'), project = join(home, 'chosen-project')
+    try {
+      await mkdir(project, { recursive: true })
+      await ctx.plugin(BrowseDirectoryPicker, { maxEntries: 1000, homeDirectory: home })
+      const capability = ctx.directoryPicker.capability()
+      if (capability.kind !== 'browse') throw new Error('expected browse provider')
+      const props = owner()
+      const listDirectory = vi.fn((path?: string, signal?: AbortSignal) => capability.list(path, signal))
+      const createDirectory = (path: string, name: string) => capability.createDirectory(path, name)
+      const view = render(<BrowseDirectoryFlow {...props} listDirectory={listDirectory}
+        createDirectory={createDirectory} t={key => key} />)
+      await waitFor(() => { expect(screen.getByRole('listitem').textContent).toBe('chosen-project') })
+      expect(listDirectory).toHaveBeenCalledWith(undefined, expect.any(AbortSignal))
+      expect(await listDirectory.mock.results[0]!.value).toMatchObject({ path: home, home })
+      expect(screen.getByRole('button', { name: 'browser.home' })).toBeTruthy()
+      expect(props.onPicked).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'browser.cancel' }))
+      expect(props.onCancel).toHaveBeenCalledOnce()
+      expect(props.onPicked).not.toHaveBeenCalled()
+      view.rerender(<BrowseDirectoryFlow {...props} open={false} listDirectory={listDirectory}
+        createDirectory={createDirectory} t={key => key} />)
+      view.rerender(<BrowseDirectoryFlow {...props} listDirectory={listDirectory}
+        createDirectory={createDirectory} t={key => key} />)
+      await waitFor(() => { expect(screen.getByRole('listitem').textContent).toBe('chosen-project') })
+      fireEvent.click(within(screen.getByRole('listitem')).getByRole('button'))
+      await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: 'browser.open' }).disabled).toBe(false) })
+      fireEvent.click(screen.getByRole('button', { name: 'browser.open' }))
+      expect(props.onPicked).toHaveBeenCalledExactlyOnceWith(project)
+      expect(props.onError).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+      await ctx.fiber.dispose()
+      await rm(box, { recursive: true, force: true })
+    }
+  })
+
   it('declares the services it drives', () => {
     expect(inject).toEqual(['slots', 'uiWorkspace', 'locale'])
   })

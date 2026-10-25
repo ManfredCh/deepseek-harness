@@ -119,6 +119,9 @@
     },
     {
       "path": "../shortcuts/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-model-selection"
     }
   ],
   "exclude": [

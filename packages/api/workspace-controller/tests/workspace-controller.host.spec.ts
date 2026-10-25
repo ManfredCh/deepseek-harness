@@ -51,7 +51,7 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
-async function harness(options: { systemDocuments?: boolean } = {}) {
+async function harness(options: { systemDocuments?: boolean; autoInitializeDefault?: boolean } = {}) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-workspace-controller-')))
   tempDirs.push(root)
   const ctx = new Context()
@@ -71,7 +71,7 @@ async function harness(options: { systemDocuments?: boolean } = {}) {
     resources: { register: vi.fn(() => dispose) },
   } as never)
   new RemoteAccessService(ctx)
-  const controller = new WorkspaceController(ctx, options.systemDocuments === true ? {} : { documentsDirectory: root })
+  const controller = new WorkspaceController(ctx, { ...options.systemDocuments === true ? {} : { documentsDirectory: root }, ...options.autoInitializeDefault === undefined ? {} : { autoInitializeDefault: options.autoInitializeDefault } })
   return { controller, ctx, root, storageDomain }
 }
 
@@ -116,6 +116,21 @@ async function nextFrame(
 }
 
 describe('WorkspaceController commands', () => {
+  it('产品首用须用户选择：不自动mkdir或登记，但显式工程和多工作区保留', async () => {
+    const { controller, ctx, root } = await harness({ autoInitializeDefault: false })
+    expect(await controller.initializeDefault(new AbortController().signal)).toBeUndefined()
+    expect(ctx.workspaceRegistry.list()).toEqual([])
+    expect(existsSync(join(root, 'deepseek-harness', DEFAULT_WORKSPACE_DIRECTORY))).toBe(false)
+    const selected = stageDir(root, 'selected-project'), second = stageDir(root, 'second-project')
+    const a = await controller.create({ path: selected }), b = await controller.create({ path: second })
+    expect(await controller.initializeDefault(new AbortController().signal)).toBeUndefined()
+    expect(ctx.workspaceRegistry.list().map(workspace => workspace.path).sort()).toEqual([realpathSync.native(selected), realpathSync.native(second)].sort())
+    expect((await controller.create({ path: selected })).workspace.workspaceId).toBe(a.workspace.workspaceId)
+    expect(b.workspace.path).toBe(realpathSync.native(second))
+    expect(ctx.sessions.list()).toEqual([])
+  })
+
+
   it('serializes concurrent path adoption and preserves an existing title', async () => {
     const { controller, root } = await harness()
     const path = stageDir(root, 'alpha')

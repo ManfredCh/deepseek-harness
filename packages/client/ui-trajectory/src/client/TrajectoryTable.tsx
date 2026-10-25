@@ -1,6 +1,7 @@
 /** Turn-aware trajectory event ledger with a local record inspector. */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { CSSProperties, ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -387,7 +388,12 @@ function AssistantTimingPanel({
 }
 
 /** Props for the trajectory ledger. */
+const EMPTY_MODEL_GROUPS = [] as const
+const emptySubscribe = () => () => {}
+
 export interface TrajectoryTableProps {
+  /** Optional existing model directory; internal request facts remain untouched. */
+  modelDirectory?: ModelDirectory | undefined
   /** Wrapping control shared by all JSON inspectors. */
   stringWrapping?: JsonTreeProps['stringWrapping']
   /** Trajectory locale seat. */
@@ -2108,7 +2114,10 @@ export function TrajectoryTable({
   onToggleAssistant,
   inspectCallId = null,
   onInspectApplied,
+  modelDirectory,
 }: TrajectoryTableProps) {
+  useSyncExternalStore(modelDirectory?.store.subscribe ?? emptySubscribe,
+    () => modelDirectory?.store.getSnapshot().groups ?? EMPTY_MODEL_GROUPS)
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
   const [selectedRequest, setSelectedRequest] = useState<SelectedRequest | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>('overview')
@@ -2323,6 +2332,12 @@ export function TrajectoryTable({
   const selectedRequestCumulativeUsage =
     selectedRequestInfo?.cumulativeUsage ?? selectedRequestUsage
   const selectedRequestOptions = selectedRequestInfo?.requestConfig
+  const requestNames = modelDirectory?.displayNames({ provider: selectedRequestOptions?.provider, model: selectedRequestOptions?.model }, t('details.model'))
+  const requestOptionsDisplay = selectedRequestOptions === undefined ? undefined : {
+    ...selectedRequestOptions,
+    ...(selectedRequestOptions.provider === undefined ? {} : { provider: requestNames?.provider ?? t('details.model') }),
+    ...(selectedRequestOptions.model === undefined ? {} : { model: requestNames?.model ?? t('details.model') }),
+  }
   const activeTurn = selectedRequestInfo === undefined ? selected?.turn : selectedRequestInfo.turn
   const activeSection = selectedRequestInfo === undefined
     ? selected?.section
@@ -3140,8 +3155,7 @@ export function TrajectoryTable({
                     <div>
                       <dt>{t('details.provider')}</dt>
                       <dd>
-                        {selectedRequestInfo.provider
-                          ?? selectedRequestInfo.requestConfig?.provider}
+                        {modelDirectory?.displayNames({ provider: selectedRequestInfo.provider ?? selectedRequestInfo.requestConfig?.provider, model: selectedRequestInfo.model ?? selectedRequestInfo.requestConfig?.model }, t('details.model')).provider ?? t('details.model')}
                       </dd>
                     </div>
                   )}
@@ -3150,8 +3164,7 @@ export function TrajectoryTable({
                     <div>
                       <dt>{t('details.model')}</dt>
                       <dd>
-                        {selectedRequestInfo.model
-                          ?? selectedRequestInfo.requestConfig?.model}
+                        {modelDirectory?.displayNames({ provider: selectedRequestInfo.provider ?? selectedRequestInfo.requestConfig?.provider, model: selectedRequestInfo.model ?? selectedRequestInfo.requestConfig?.model }, t('details.model')).model ?? t('details.model')}
                       </dd>
                     </div>
                   )}
@@ -3222,7 +3235,7 @@ export function TrajectoryTable({
                 <div className={css.overviewSections}>
                   {selectedRequestOptions !== undefined && (
                     <OverviewSection label={t('tab.options')} onOpen={() => { activateTab('options') }}>
-                      <RequestOptions options={selectedRequestOptions} preview stringWrapping={stringWrapping} t={t} />
+                      <RequestOptions options={requestOptionsDisplay} preview stringWrapping={stringWrapping} t={t} />
                     </OverviewSection>
                   )}
                   <OverviewSection label={t('tab.usage')} onOpen={() => { activateTab('usage') }}>
@@ -3241,7 +3254,7 @@ export function TrajectoryTable({
               </>
             )}
             {selectedRequestInfo !== undefined && activeTab === 'options' && (
-              <RequestOptions options={selectedRequestOptions} stringWrapping={stringWrapping} t={t} />
+              <RequestOptions options={requestOptionsDisplay} stringWrapping={stringWrapping} t={t} />
             )}
             {selectedRequestInfo !== undefined && activeTab === 'usage' && (
               <RequestUsagePanel

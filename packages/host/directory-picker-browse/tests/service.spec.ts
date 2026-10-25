@@ -45,6 +45,43 @@ afterAll(async () => {
 })
 
 describe('BrowseDirectoryPicker', () => {
+  it('明确public Home独立于隔离HOME，多个profile保各自起点且不改变显式路径', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-public-home-'))
+    const first = join(parent, 'human-a'), second = join(parent, 'human-b'), privateHome = join(parent, 'account-private')
+    await mkdir(first); await mkdir(second); await mkdir(privateHome)
+    await mkdir(join(first, 'project-a')); await mkdir(join(second, 'project-b'))
+    const beforeHome = process.env.HOME
+    process.env.HOME = privateHome
+    const contexts: Context[] = []
+    try {
+      for (const homeDirectory of [first, second]) {
+        const ctx = new Context(); contexts.push(ctx)
+        await ctx.plugin(BrowseDirectoryPicker, { maxEntries: 1000, homeDirectory })
+        const current = ctx.directoryPicker.capability()
+        if (current.kind !== 'browse') throw new Error('expected native browse owner')
+        expect(current.homeDirectory).toBe(homeDirectory)
+        const listing = await current.list()
+        expect(listing.path).toBe(homeDirectory); expect(listing.home).toBe(homeDirectory)
+        expect(listing.entries.map(entry => entry.name)).toEqual([homeDirectory === first ? 'project-a' : 'project-b'])
+        const explicit = await current.list(root)
+        expect(explicit.path).toBe(root); expect(explicit.home).toBe(homeDirectory)
+      }
+      expect(process.env.HOME).toBe(privateHome)
+    } finally {
+      if (beforeHome === undefined) delete process.env.HOME; else process.env.HOME = beforeHome
+      await Promise.all(contexts.map(ctx => ctx.fiber.dispose()))
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('不把relative或空public Home rebased进cwd，坏配置明确失败', () => {
+    for (const homeDirectory of ['', 'relative-project']) {
+      const ctx = new Context()
+      expect(() => new BrowseDirectoryPicker(ctx, { maxEntries: 10, homeDirectory })).toThrow('fully qualified')
+      void ctx.fiber.dispose()
+    }
+  })
+
   it('lists directories only, flags hidden rows, follows symlinks, skips broken links, sorts by name', async () => {
     const listing = await capability.list(root)
     expect(listing.path).toBe(root)

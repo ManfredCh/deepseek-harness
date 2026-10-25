@@ -10,6 +10,7 @@ import type { Context, Events } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
+import { claimLlmContinuation } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { RetryId } from './brand.ts'
@@ -188,6 +189,7 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     agent.session.append('llm/retry', eventData)
     if (!await cancellableDelay(delayMs, fusedSignal)) return
     agent.session.append('llm/retry-started', { retryId, turn, step, retry })
+    if (fusedSignal.aborted) return
     return { kind: 'retry' }
   }
 
@@ -195,6 +197,18 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     { agent, turn, step, provider, failure, retryPolicy: policy, signal }: Parameters<Events['agent/request-error']>[0],
     next: () => Promise<RequestErrorAction>,
   ): Promise<RequestErrorAction> {
+    // 只认领本次原 transport 的单次续接能力，沿 AgentLoop 原 attempt 边界重建 parser。
+    // 公开摘要本身、普通 unknown/reserved 或恢复后的持久化事件都不足以授权。
+    if (!lifetime.signal.aborted && claimLlmContinuation(failure, provider, signal)) {
+      // 此协议只认领同一中央请求的一次备用，不占 provider 通用重试预算。
+      // 仍沿原 durable-before-wait 与 started 事件边界，0 延迟也保留取消机会。
+      const continuationPolicy: ResolvedRetryPolicy = {
+        mode: 'normal', maxRetries: 1, retryableCodes: [],
+        initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0,
+      }
+      return backoff(agent, turn, step, failure, provider, continuationPolicy,
+        JSON.stringify(['central-continuation', 1]), 1, RetryId(randomUUID()), 0, signal)
+    }
     // 中央owner未确认结果，或明确禁止重发；normal/always都不能新建同一收费请求。
     if (failure.diagnostic?.retryable === false || failure.diagnostic?.effect === 'unknown'
       || failure.diagnostic?.effect === 'reserved' || failure.diagnostic?.effect === 'charged') return

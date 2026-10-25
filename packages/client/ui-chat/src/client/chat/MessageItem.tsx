@@ -57,6 +57,9 @@ function failureMessage(
   if (code === 'INTERRUPTED') return t('message.failure.interrupted')
   if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return t('message.failure.accountSignInRequired')
   if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return t('message.failure.quota')
+  if (code === 'TIMEOUT' || code === 'TRANSPORT') return t('message.failure.transportIncomplete')
+  if (code === 'CENTRAL_DIAGNOSTIC_INVALID') return t('message.failure.centralDiagnosticInvalid')
+  if (code === 'model_reconciliation_required') return t('message.failure.centralReconciliationRequired')
   return code === 'AUTH' ? t('message.failure.auth') : message
 }
 

@@ -44,7 +44,8 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/cordis": "workspace:~"
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/dsh-client-ui-model-selection": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "workspace:*",
@@ -68,12 +69,18 @@
     "@deepseek-ai/dsh-llm": "workspace:*",
     "@deepseek-ai/dsh-attachment": "workspace:*",
     "@tanstack/react-virtual": "3.14.10",
-    "diff": "^9.0.0"
+    "diff": "^9.0.0",
+    "@deepseek-ai/dsh-client-ui-model-selection": "workspace:*"
   },
   "files": [
     "locale/*.json",
     "lib/index.js",
     "lib/client.js",
     "lib/types/**/*.d.ts"
-  ]
+  ],
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-model-selection": {
+      "optional": true
+    }
+  }
 }

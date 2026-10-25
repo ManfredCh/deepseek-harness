@@ -3,8 +3,12 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Why one session's composer is inert. */
 export interface ComposerBlock {
+  /** Explicit model-only refusal; absent or unknown classifications keep native commands locked. */
+  readonly kind?: 'model-unavailable'
   /** Localized placeholder owned by the plugin that raised the block. */
   readonly reason: string
+  /** A model-only refusal may leave the existing file-permission control available. Other blocks stay locked. */
+  readonly allowPermissionChanges?: boolean
 }
 
 /** The registry face other plugins reach through `ctx.conversation.blocks`. */

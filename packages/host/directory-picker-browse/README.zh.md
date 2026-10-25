@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 列举目录
 
-`list(path?)` 返回一个目录层级：按名称排序的子目录及其绝对路径、`hidden` 标志（POSIX 上为点前缀）、`home` 锚点，以及 `crumbs`——从根到目标的祖先链，其中每个 crumb 都是跳转目标，根以完整路径标注。不带路径时列举宿主账户的家目录。单次调用至多返回 `maxEntries` 行（配置项，默认 1,000——GitHub 网页端对目录列举采用的同一上限），被截断的层级会报告 `truncated: true`，供客户端提示层级不完整。指向目录的符号链接会被跟随；断链与循环链接被跳过。
+`list(path?)` 返回一个目录层级：按名称排序的子目录及其绝对路径、`hidden` 标志（POSIX 上为点前缀）、`home` 锚点，以及 `crumbs`——从根到目标的祖先链，其中每个 crumb 都是跳转目标，根以完整路径标注。不带路径时列举配置的 `homeDirectory`，未配置则使用宿主账户的家目录；显式 `path` 仍按原路径浏览。能力对象的只读 `homeDirectory` 与返回行的 `home` 来自同一配置，不受隔离进程 `HOME` 影响。单次调用至多返回 `maxEntries` 行（配置项，默认 1,000——GitHub 网页端对目录列举采用的同一上限），被截断的层级会报告 `truncated: true`，供客户端提示层级不完整。指向目录的符号链接会被跟随；断链与循环链接被跳过。
 
 ### 创建目录
 
@@ -44,6 +44,7 @@ kind: "package-reference"
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `maxEntries` | `1,000` | 单个列举层级的完整结果上限；隐藏行计入该上限 |
+| `homeDirectory` | 宿主账户的家目录 | 完全限定的公共用户目录；用于浏览起点及只读安装发现，不登记工程、不扩大模型权限 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-host-directory-picker-browse)是每个受支持字段及其 JSDoc 的穷尽式真源。
 

@@ -1,3 +1,4 @@
+import { modelDisplayNames } from './directory.ts'
 /**
  * ModelSelect: the composer's named model seat (`conversation.input.model`).
  * Two-level selection per figma 496:26454's MenuDropdown: the root menu is
@@ -422,12 +423,13 @@ export function ModelSelect(
   const waiting = currentChoice === undefined && state.status === 'loading'
   const modelLabel = waiting
     ? t('trigger.loading')
-    : currentChoice?.model.name
-      ?? t('trigger.fallback')
+    : state.current === null
+      ? t('trigger.fallback')
+      : modelDisplayNames(state.groups, state.current, t('menu.model')).model
   const triggerLabel = effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
   const triggerAria = waiting
     ? t('trigger.loading')
-    : currentChoice === undefined
+    : state.current === null
       ? t('trigger.selectAria')
       : effortLabel === undefined
         ? t('trigger.aria', { model: modelLabel })
